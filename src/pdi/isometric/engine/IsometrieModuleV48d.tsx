@@ -877,12 +877,28 @@ function IsometrieModule() {
   const [workspaceFullscreen,setWorkspaceFullscreen]=useState(true);
   // V4.8_DARK_WORKSPACE_STUDIO : shell CAO plein écran limité à PD & I.
   const [studioLayout,setStudioLayout]=useState<"design"|"data"|"control">("design");
-  useEffect(()=>{
-    if(!workspaceFullscreen)return;
-    const previousOverflow=document.body.style.overflow;
-    document.body.style.overflow="hidden";
-    return()=>{document.body.style.overflow=previousOverflow;};
-  },[workspaceFullscreen]);
+  useEffect(() => {
+    if (!workspaceFullscreen) return;
+    // V4.8d1_WORKSPACE_CAO_FIXED : le navigateur ne scrolle plus la page.
+    // La molette est réservée au zoom/pan de la zone de travail.
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    const previousBodyHeight = document.body.style.height;
+    const previousHtmlHeight = document.documentElement.style.height;
+    const previousOverscroll = document.body.style.overscrollBehavior;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.height = "100vh";
+    document.documentElement.style.height = "100vh";
+    document.body.style.overscrollBehavior = "none";
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.body.style.height = previousBodyHeight;
+      document.documentElement.style.height = previousHtmlHeight;
+      document.body.style.overscrollBehavior = previousOverscroll;
+    };
+  }, [workspaceFullscreen]);
   const [shortcutsOpen,setShortcutsOpen]=useState(false);
   const [commandPaletteOpen,setCommandPaletteOpen]=useState(false);
   const [aboutOpen,setAboutOpen]=useState(false);
@@ -2225,9 +2241,103 @@ function IsometrieModule() {
     setDraggedEquipmentType(null);
   };
 
+  // V4.8d1_WORKSPACE_CAO_MENU : menus type logiciel CAO.
+  const cadMenuGroups: Array<{
+    title: string;
+    items: Array<{ label: string; hint?: string; run: () => void; disabled?: boolean }>;
+  }> = [
+    {
+      title: "Fichier",
+      items: [
+        { label: "Exemple poste", hint: "charger", run: loadPresetPoste },
+        { label: "Exemple gare racleur", hint: "charger", run: loadPresetGare },
+        { label: "Ouvrir JSON", hint: "import", run: () => importProjectRef.current?.click() },
+        { label: "Sauver JSON", hint: "export", run: exportProjectJson },
+      ],
+    },
+    {
+      title: "Édition",
+      items: [
+        { label: "Annuler", hint: "Ctrl+Z", run: undoGraph },
+        { label: "Supprimer sélection", hint: "Suppr", run: deleteSelection, disabled: !selectedCount },
+        { label: "Désélectionner", hint: "Esc", run: clearSelection },
+      ],
+    },
+    {
+      title: "Affichage",
+      items: [
+        { label: "Zoom +", hint: "+", run: zoomIn },
+        { label: "Zoom -", hint: "-", run: zoomOut },
+        { label: "Ajuster/recentrer", hint: "Fit", run: resetView },
+        { label: showGrid ? "Masquer grille" : "Afficher grille", hint: "#", run: () => setShowGrid((v) => !v) },
+        { label: showPipeLabels ? "Masquer pipelines" : "Afficher pipelines", run: () => setShowPipeLabels((v) => !v) },
+        { label: showWelds ? "Masquer soudures" : "Afficher soudures", run: () => setShowWelds((v) => !v) },
+      ],
+    },
+    {
+      title: "Dessin",
+      items: [
+        { label: "Sélection", hint: "V", run: () => { setInteractionMode("select"); setIsoDrawMode("select"); } },
+        { label: "Main / Pan", hint: "H", run: () => setInteractionMode("main") },
+        { label: "Nœud", hint: "N", run: () => { setInteractionMode("select"); setIsoDrawMode("node"); } },
+        { label: "Tube", hint: "T", run: () => { setInteractionMode("select"); setIsoDrawMode("segment"); } },
+        { label: "Té", hint: "E", run: () => { setInteractionMode("select"); setIsoDrawMode("te"); } },
+        { label: "Coude", hint: "C", run: () => { setInteractionMode("select"); setIsoDrawMode("coude"); } },
+      ],
+    },
+    {
+      title: "Cotation",
+      items: [
+        { label: "Créer cotation", hint: "M", run: () => { setInteractionMode("select"); setIsoDrawMode("dimension"); setDimensionPick(null); } },
+        { label: showDimensions ? "Masquer cotations" : "Afficher cotations", hint: "D", run: () => setShowDimensions((v) => !v) },
+        { label: "Supprimer dernière cote", hint: "⌫", run: removeSelectedDimensions, disabled: dimensions.length === 0 },
+      ],
+    },
+    {
+      title: "Alignement",
+      items: [
+        { label: "Aligner X", hint: "AX", run: () => alignSelectedNodesAxis("x"), disabled: selectedNodeIds.length < 2 },
+        { label: "Aligner Y", hint: "AY", run: () => alignSelectedNodesAxis("y"), disabled: selectedNodeIds.length < 2 },
+        { label: "Aligner Z", hint: "AZ", run: () => alignSelectedNodesAxis("z"), disabled: selectedNodeIds.length < 2 },
+        { label: "Équipement sur tube", hint: "AT", run: alignSelectedEquipmentOnTube },
+        { label: "Rendre parallèle", hint: "//", run: makeSelectedSegmentsParallel, disabled: selectedSegmentIds.length < 2 },
+        { label: "Redresser ISO", hint: "ISO", run: redressIsoSelection, disabled: selectedSegmentIds.length < 1 },
+      ],
+    },
+    {
+      title: "Insertion",
+      items: [
+        { label: leftPanelOpen ? "Masquer bibliothèque" : "Afficher bibliothèque", hint: "⧉", run: () => setLeftPanelOpen((v) => !v) },
+        { label: "Vanne par défaut", run: () => { setFitType("vanne_passage_total"); setFitLabel(FITTING_LABELS.vanne_passage_total); setLeftPanelOpen(true); } },
+      ],
+    },
+    {
+      title: "Impression",
+      items: [
+        { label: "Planche ISO", hint: "A3", run: () => setIsoMode((v) => (v === "editor" ? "planche" : "editor")) },
+        { label: "Imprimer", hint: "⎙", run: printPlanSheet },
+      ],
+    },
+    {
+      title: "Export",
+      items: [
+        { label: "Exporter JSON", hint: "⇩", run: exportProjectJson },
+        { label: "PDF / DXF", hint: "V4.8e", run: () => setStatusMessage("PDF/DXF prévu en V4.8e") },
+      ],
+    },
+    {
+      title: "Outils",
+      items: [
+        { label: "Contrôle réseau", hint: graphErrorCount ? `${graphErrorCount} erreur(s)` : "OK", run: () => { setStudioLayout("control"); setLeftPanelOpen(true); } },
+        { label: "Palette commandes", hint: "Ctrl+K", run: () => setCommandPaletteOpen(true) },
+        { label: "Raccourcis", hint: "?", run: () => setShortcutsOpen(true) },
+      ],
+    },
+  ];
+
   return <div
-      data-pdi-studio="v4.8c4"
-      className={`${workspaceFullscreen ? "fixed inset-0 z-[9999] overflow-auto bg-[#0B0F14] px-3 pb-[48px] pt-[66px] pl-[74px]" : "w-full"} pdi-studio-root space-y-3 animate-fade-in`}
+      data-pdi-studio="v4.8d1"
+      className={`${workspaceFullscreen ? "fixed inset-0 z-[9999] overflow-hidden bg-[#0B0F14] px-2 pb-[34px] pt-[84px] pl-[64px]" : "w-full"} pdi-studio-root ${workspaceFullscreen ? "h-screen" : "space-y-3"} animate-fade-in`}
     >
       <style>{`
         [data-pdi-studio]{--pdi-bg:#0B0F14;--pdi-panel:#161B22;--pdi-panel2:#1C222B;--pdi-line:#30363D;--pdi-text:#E6EDF3;--pdi-muted:#8B949E;--pdi-blue:#2F81F7;--pdi-cyan:#22D3EE;--pdi-select:#F59E0B;background:var(--pdi-bg)!important;color:var(--pdi-text);font-family:Inter,ui-sans-serif,system-ui,sans-serif}
@@ -2249,11 +2359,23 @@ function IsometrieModule() {
         [data-pdi-studio] button:active{transform:translateY(1px)}
         [data-pdi-studio] .pdi-studio-topbar{background:#11151B;border-bottom:1px solid var(--pdi-line);box-shadow:0 8px 24px rgba(0,0,0,.28)}
         [data-pdi-studio] .pdi-studio-rail{background:#11151B;border-right:1px solid var(--pdi-line);box-shadow:8px 0 24px rgba(0,0,0,.2)}
-        [data-pdi-studio] .pdi-rail-button{width:42px;height:42px;border:1px solid transparent;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#9CA3AF;background:#161B22;font-weight:900;font-size:11px}
+        [data-pdi-studio] .pdi-cad-menubar{display:flex;align-items:center;gap:2px;min-width:0;overflow:visible}
+        [data-pdi-studio] .pdi-cad-menu{position:relative}
+        [data-pdi-studio] .pdi-cad-menu-trigger{height:28px;padding:0 10px;border-radius:6px;color:#D1D5DB;background:transparent;font-size:11px;font-weight:900;white-space:nowrap}
+        [data-pdi-studio] .pdi-cad-menu:hover .pdi-cad-menu-trigger{background:#1F2937;color:white}
+        [data-pdi-studio] .pdi-cad-menu-panel{display:none;position:absolute;top:30px;left:0;min-width:210px;max-height:70vh;overflow:auto;z-index:10050;background:#0F141B;border:1px solid #30363D;border-radius:10px;padding:6px;box-shadow:0 18px 45px rgba(0,0,0,.45)}
+        [data-pdi-studio] .pdi-cad-menu:hover .pdi-cad-menu-panel{display:block}
+        [data-pdi-studio] .pdi-cad-menu-item{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;border-radius:7px;padding:7px 8px;color:#E5E7EB;background:transparent;text-align:left;font-size:11px;font-weight:800}
+        [data-pdi-studio] .pdi-cad-menu-item:hover:not(:disabled){background:#1D4ED8;color:white}
+        [data-pdi-studio] .pdi-cad-menu-item:disabled{opacity:.38;cursor:not-allowed}
+        [data-pdi-studio] .pdi-cad-menu-hint{font-size:9px;color:#94A3B8;font-weight:900}
+        [data-pdi-studio] .pdi-studio-rail{background:#11151B;border-right:1px solid var(--pdi-line);box-shadow:8px 0 24px rgba(0,0,0,.2)}
+        [data-pdi-studio] .pdi-rail-button{width:38px;height:38px;border:1px solid transparent;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#9CA3AF;background:#161B22;font-weight:900;font-size:14px}
         [data-pdi-studio] .pdi-rail-button:hover{border-color:#3B82F6;color:#E6EDF3;background:#1C2735}
         [data-pdi-studio] .pdi-rail-button.active{color:white;background:#2563EB;border-color:#60A5FA}
         [data-pdi-studio] ::-webkit-scrollbar{width:10px;height:10px}[data-pdi-studio] ::-webkit-scrollbar-track{background:#0B0F14}[data-pdi-studio] ::-webkit-scrollbar-thumb{background:#374151;border:2px solid #0B0F14;border-radius:8px}
-        @media(max-width:900px){[data-pdi-studio].pdi-studio-root{padding-left:12px!important;padding-top:60px!important}[data-pdi-studio] .pdi-studio-rail{display:none!important}[data-pdi-studio] .pdi-brand-subtitle{display:none}}
+        @media(max-width:900px){[data-pdi-studio].pdi-studio-root{padding-left:8px!important;padding-top:92px!important}[data-pdi-studio] .pdi-studio-rail{display:none!important}[data-pdi-studio] .pdi-brand-subtitle{display:none}[data-pdi-studio] .pdi-cad-menubar{position:absolute;left:8px;right:8px;bottom:6px;overflow-x:auto;padding-bottom:1px}[data-pdi-studio] .pdi-cad-menu-trigger{font-size:10px;padding:0 8px}[data-pdi-studio] .pdi-svg-logo{min-width:170px!important;max-width:210px!important}}
+        @media(max-width:1200px){[data-pdi-studio] .pdi-cad-menu-trigger{padding:0 7px;font-size:10px}}
       `}</style>
       {workspaceFullscreen&&<>
         <header className="pdi-studio-topbar fixed left-0 right-0 top-0 z-[10010] h-[54px] px-3 flex items-center justify-between gap-3 text-slate-100">
@@ -2278,13 +2400,36 @@ function IsometrieModule() {
             <div className="hidden lg:block h-7 w-px bg-slate-700"/>
             <div className="hidden lg:block min-w-0"><div className="text-[9px] uppercase text-slate-500">Projet actif</div><div className="max-w-[260px] truncate text-xs font-bold">{projectName}</div></div>
           </div>
-          <div className="hidden md:flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900/70 p-1">
-            {(["design","data","control"] as const).map(layout=><button key={layout} onClick={()=>{setStudioLayout(layout);setLeftPanelOpen(layout==="design");setStatusMessage(`Disposition ${layout}`)}} className={`h-7 px-3 rounded text-[10px] font-black uppercase ${studioLayout===layout?"bg-blue-600 text-white":"text-slate-400 hover:text-white"}`}>{layout==="design"?"Conception":layout==="data"?"Données":"Contrôle"}</button>)}
-          </div>
+            <nav className="pdi-cad-menubar hidden md:flex" aria-label="Menus PD & I">
+              {cadMenuGroups.map((group) => (
+                <div key={group.title} className="pdi-cad-menu">
+                  <button type="button" className="pdi-cad-menu-trigger">
+                    {group.title}
+                  </button>
+                  <div className="pdi-cad-menu-panel">
+                    {group.items.map((item) => (
+                      <button
+                        key={`${group.title}-${item.label}`}
+                        type="button"
+                        disabled={item.disabled}
+                        onClick={() => {
+                          item.run();
+                          setStatusMessage(`${group.title} · ${item.label}`);
+                        }}
+                        className="pdi-cad-menu-item"
+                      >
+                        <span>{item.label}</span>
+                        {item.hint && <span className="pdi-cad-menu-hint">{item.hint}</span>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </nav>
           <div className="flex items-center gap-2">
             <div className="hidden xl:flex items-center gap-3 text-[10px] text-slate-400"><span>{nodes.length} nœuds</span><span>{segments.length} tronçons</span><span className={graphErrorCount?"text-red-400":"text-emerald-400"}>{graphErrorCount?`${graphErrorCount} erreur(s)`:"Graphe valide"}</span></div>
-            <button onClick={()=>setCommandPaletteOpen(true)} className="h-8 px-3 rounded-md border border-slate-700 bg-slate-800 text-[10px] font-black">Ctrl+K</button>
-            <button onClick={()=>setWorkspaceFullscreen(false)} className="h-8 px-3 rounded-md border border-red-500/40 bg-red-500/10 text-red-300 text-[10px] font-black">Quitter PD & I</button>
+            <button onClick={()=>setCommandPaletteOpen(true)} className="h-8 px-2 rounded-md border border-slate-700 bg-slate-800 text-[10px] font-black" title="Palette commandes">⌘K</button>
+            <button onClick={()=>setWorkspaceFullscreen(false)} className="h-8 w-8 rounded-md border border-red-500/40 bg-red-500/10 text-red-300 text-sm font-black" title="Quitter PD & I">×</button>
           </div>
         </header>
         <aside className="pdi-studio-rail fixed bottom-0 left-0 top-[54px] z-[10005] w-[62px] py-3 flex flex-col items-center gap-2">
@@ -2306,13 +2451,13 @@ function IsometrieModule() {
             DIM
           </button>
           <div className="my-1 h-px w-8 bg-slate-700"/>
-          <button title="Bibliothèque" onClick={()=>setLeftPanelOpen(v=>!v)} className={`pdi-rail-button ${leftPanelOpen?"active":""}`}>LIB</button>
-          <button title="Planche ISO" onClick={()=>setIsoMode(v=>v==="editor"?"planche":"editor")} className={`pdi-rail-button ${isoMode==="planche"?"active":""}`}>A3</button>
-          <button title="Imprimer" onClick={printPlanSheet} className="pdi-rail-button">PRN</button>
+          <button title="Bibliothèque" onClick={()=>setLeftPanelOpen(v=>!v)} className={`pdi-rail-button ${leftPanelOpen?"active":""}`}>⧉</button>
+          <button title="Planche ISO" onClick={()=>setIsoMode(v=>v==="editor"?"planche":"editor")} className={`pdi-rail-button ${isoMode==="planche"?"active":""}`}>▣</button>
+          <button title="Imprimer" onClick={printPlanSheet} className="pdi-rail-button">⎙</button>
           <div className="my-1 h-px w-8 bg-slate-700"/>
           <button title="Annuler (Ctrl+Z)" onClick={undoGraph} className="pdi-rail-button">↶</button>
-          <button title="Sauver JSON" onClick={exportProjectJson} className="pdi-rail-button">SAV</button>
-          <button title="Ouvrir JSON" onClick={()=>importProjectRef.current?.click()} className="pdi-rail-button">OPN</button>
+          <button title="Sauver JSON" onClick={exportProjectJson} className="pdi-rail-button">⇩</button>
+          <button title="Ouvrir JSON" onClick={()=>importProjectRef.current?.click()} className="pdi-rail-button">⇧</button>
           <div className="flex-1"/>
           <button title="Aide" onClick={()=>setShortcutsOpen(true)} className="pdi-rail-button">?</button>
         </aside>
@@ -2335,7 +2480,7 @@ function IsometrieModule() {
             <h3 className="mt-3 text-lg font-black text-white">PD &amp; I — Pipeline Design &amp; Isometrics</h3>
             <p className="mt-1 text-xs font-semibold text-cyan-300">Powered by DZ-YSB-DEV</p>
             <p className="mt-4 text-[11px] text-slate-400">© 2026 DZ-YSB-DEV. All rights reserved.</p>
-            <p className="text-[10px] text-slate-500">Version 4.8d</p>
+            <p className="text-[10px] text-slate-500">Version 4.8d1</p>
             <button onClick={() => setAboutOpen(false)} className="mt-5 rounded-lg bg-blue-600 px-6 py-2 text-xs font-black text-white hover:bg-blue-500 transition-colors">
               Fermer
             </button>
@@ -2425,9 +2570,9 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
           <div className="flex flex-wrap gap-2"><button type="button" onClick={()=>setPlanPage(1)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold ${planPage===1?"bg-blue-600 text-white":"bg-slate-100"}`}>Planche 1</button><button type="button" onClick={()=>setPlanPage(2)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold ${planPage===2?"bg-blue-600 text-white":"bg-slate-100"}`}>Planche 2</button><button type="button" onClick={printPlanSheet} className="px-3 py-1.5 rounded-lg text-[10px] font-black bg-slate-900 text-white"><Printer className="inline w-3 h-3 mr-1"/>Imprimer A3 paysage</button></div>
         </div>}
 
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-start">
+    <div className={`${workspaceFullscreen ? "h-[calc(100vh-118px)] overflow-hidden" : ""} grid grid-cols-1 lg:grid-cols-12 gap-3 items-start`}>
 
-      <div className={`${leftPanelOpen?"lg:col-span-3":"hidden"} space-y-3 lg:sticky lg:top-16 lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto lg:pr-1`}>
+      <div className={`${leftPanelOpen?"lg:col-span-3":"hidden"} ${workspaceFullscreen ? "h-full min-h-0 overflow-y-auto pr-1" : "space-y-3 lg:sticky lg:top-16 lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto lg:pr-1"} space-y-3`}>
 
         <div className="bg-white rounded-2xl border border-slate-200 p-3 shadow-sm"><div className="flex items-center justify-between"><h3 className="text-xs font-black uppercase">Bibliothèque équipements</h3><span className="text-[9px] text-slate-400">glisser sur tube ou dessin</span></div><input value={libraryQuery} onChange={e=>setLibraryQuery(e.target.value)} placeholder="Rechercher vanne, coude, bride…" className="w-full mt-2 border rounded-lg px-3 py-2 text-xs"/><div className="grid grid-cols-2 gap-1.5 mt-2 max-h-64 overflow-y-auto">{libraryItems.map(t=><button key={t} type="button" draggable onDragStart={e=>{e.dataTransfer.setData("application/x-iso-equipment",t);e.dataTransfer.setData("text/plain",t);e.dataTransfer.effectAllowed="copy";setDraggedEquipmentType(t);setStatusMessage(`Glisser ${FITTING_LABELS[t]} sur le dessin`)}} onDragEnd={()=>setDraggedEquipmentType(null)} onClick={()=>{setFitType(t);setFitLabel(FITTING_LABELS[t]);setStatusMessage(`${FITTING_LABELS[t]} sélectionné`)}} onDoubleClick={()=>selectedSegmentId&&insertEquipmentNode(selectedSegmentId,t,.5,FITTING_LABELS[t])} className={`pdi-library-card ${fitType===t?"active":""} ${draggedEquipmentType===t?"dragging":""} min-h-12 p-2 rounded-lg border text-left text-[10px] font-bold`}><span className="block text-[9px] text-slate-400">{t.includes("vanne")?"VANNE":t.startsWith("coude")?"COUDE":t.includes("bride")||t==="jmi"?"RACCORD":"ÉQUIPEMENT"}</span>{FITTING_LABELS[t]}</button>)}</div></div>
 
@@ -2539,8 +2684,8 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
         </div>
       </div>
 
-      <div className={`${leftPanelOpen?"lg:col-span-9":"lg:col-span-12"}`}>
-        <div className="bg-slate-900 rounded-3xl border-2 border-slate-800 p-4 shadow-2xl">
+      <div className={`${leftPanelOpen?"lg:col-span-9":"lg:col-span-12"} ${workspaceFullscreen ? "h-full min-h-0" : ""}`}>
+        <div className={`${workspaceFullscreen ? "h-full min-h-0 flex flex-col overflow-hidden" : ""} bg-slate-900 rounded-3xl border-2 border-slate-800 p-3 shadow-2xl`}>
           <div className="flex flex-wrap justify-between gap-2 text-white border-b border-slate-800 pb-3 mb-2">
             <div className="flex items-center gap-2"><Maximize2 className="w-4 h-4 text-blue-400"/><span className="text-xs font-black uppercase">Vue isométrique 30°</span><span className="text-[10px] font-mono bg-slate-800 px-2 py-1 rounded">{Math.round(viewport.zoom*100)}%</span></div>
             <div className="w-full xl:w-auto min-w-0 flex flex-wrap justify-start xl:justify-end items-center gap-1">
@@ -2552,28 +2697,28 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
                 <button type="button" onClick={()=>setInteractionMode("select")} className={`px-2 py-1 rounded text-[10px] font-black flex items-center gap-1 ${interactionMode==="select"?"bg-blue-600 text-white":"bg-slate-800 text-slate-300"}`} title="Sélection : déplacer les éléments"><MousePointer2 className="w-3 h-3"/>SÉLECTION</button>
               </div>
               <button type="button" onClick={deleteSelection} disabled={!selectedCount} className="px-2 py-1 bg-red-700 disabled:bg-slate-700 disabled:text-slate-500 rounded text-[10px] font-black flex items-center gap-1" title="Supprimer la sélection (Suppr)"><Trash2 className="w-3 h-3"/>SUPPR</button>
-              <button type="button" onClick={()=>setShowGrid(v=>!v)} className="px-2 py-1 bg-blue-600 rounded text-[10px] font-bold">Grille ISO</button>
-              <button type="button" onClick={()=>{setIsoDrawMode(v=>v==="node"?"select":"node");setDrawStartNodeId(null)}} className={`px-2 py-1 rounded text-[10px] font-bold ${isoDrawMode==="node"?"bg-emerald-600":"bg-slate-700"}`}>+ NŒUD</button>
-              <button type="button" onClick={()=>{setIsoDrawMode(v=>v==="segment"?"select":"segment");setDrawStartNodeId(null)}} className={`px-2 py-1 rounded text-[10px] font-bold ${isoDrawMode==="segment"?"bg-emerald-600":"bg-slate-700"}`}>+ TUBE</button>
-              <button type="button" onClick={()=>{setIsoDrawMode(v=>v==="te"?"select":"te");setDrawStartNodeId(null)}} className={`px-2 py-1 rounded text-[10px] font-bold ${isoDrawMode==="te"?"bg-violet-600":"bg-slate-700"}`}>+ TÉ</button>
-              <button type="button" onClick={()=>{setIsoDrawMode(v=>v==="coude"?"select":"coude");setDrawStartNodeId(null)}} className={`px-2 py-1 rounded text-[10px] font-bold ${isoDrawMode==="coude"?"bg-amber-600":"bg-slate-700"}`}>+ COUDE</button>
+              <button type="button" onClick={()=>setShowGrid(v=>!v)} className="px-2 py-1 bg-blue-600 rounded text-[10px] font-bold">#</button>
+              <button type="button" onClick={()=>{setIsoDrawMode(v=>v==="node"?"select":"node");setDrawStartNodeId(null)}} className={`px-2 py-1 rounded text-[10px] font-bold ${isoDrawMode==="node"?"bg-emerald-600":"bg-slate-700"}`}>●</button>
+              <button type="button" onClick={()=>{setIsoDrawMode(v=>v==="segment"?"select":"segment");setDrawStartNodeId(null)}} className={`px-2 py-1 rounded text-[10px] font-bold ${isoDrawMode==="segment"?"bg-emerald-600":"bg-slate-700"}`}>╱</button>
+              <button type="button" onClick={()=>{setIsoDrawMode(v=>v==="te"?"select":"te");setDrawStartNodeId(null)}} className={`px-2 py-1 rounded text-[10px] font-bold ${isoDrawMode==="te"?"bg-violet-600":"bg-slate-700"}`}>⊥</button>
+              <button type="button" onClick={()=>{setIsoDrawMode(v=>v==="coude"?"select":"coude");setDrawStartNodeId(null)}} className={`px-2 py-1 rounded text-[10px] font-bold ${isoDrawMode==="coude"?"bg-amber-600":"bg-slate-700"}`}>⌒</button>
               <button type="button" onClick={()=>setGcVisibleEditor(v=>!v)} className={`px-2 py-1 rounded text-[10px] font-bold ${gcVisibleEditor?"bg-cyan-700":"bg-slate-700"}`}>GC</button>
               <select value={isoSnapStep} onChange={e=>setIsoSnapStep(Number(e.target.value))} className="bg-slate-700 rounded px-2 py-1 text-[10px]" title="Pas d'accrochage">
                 <option value=".25">Snap 0,25 m</option><option value=".5">Snap 0,50 m</option><option value="1">Snap 1,00 m</option>
               </select>
-              <button type="button" onClick={()=>setShowDimensions(v=>!v)} className="px-2 py-1 bg-blue-600 rounded text-[10px] font-bold">Cotations</button>
-              <button type="button" onClick={()=>setShowPipeLabels(v=>!v)} className={`px-2 py-1 rounded text-[10px] font-bold ${showPipeLabels?"bg-cyan-600":"bg-slate-700"}`}>Pipelines</button>
-              <button type="button" onClick={()=>setShowWelds(v=>!v)} className={`px-2 py-1 rounded text-[10px] font-bold ${showWelds?"bg-amber-600":"bg-slate-700"}`}>Soudures</button>
-              <button type="button" onClick={()=>setShowLabels(v=>!v)} className="px-2 py-1 bg-slate-700 rounded text-[10px] font-bold">Labels</button>
+              <button type="button" onClick={()=>setShowDimensions(v=>!v)} className="px-2 py-1 bg-blue-600 rounded text-[10px] font-bold">⇔</button>
+              <button type="button" onClick={()=>setShowPipeLabels(v=>!v)} className={`px-2 py-1 rounded text-[10px] font-bold ${showPipeLabels?"bg-cyan-600":"bg-slate-700"}`}>PL</button>
+              <button type="button" onClick={()=>setShowWelds(v=>!v)} className={`px-2 py-1 rounded text-[10px] font-bold ${showWelds?"bg-amber-600":"bg-slate-700"}`}>W</button>
+              <button type="button" onClick={()=>setShowLabels(v=>!v)} className="px-2 py-1 bg-slate-700 rounded text-[10px] font-bold">Aa</button>
               <button type="button" onClick={zoomOut} className="px-2 py-1 bg-slate-700 rounded"><ZoomOut className="w-3.5 h-3.5"/></button>
               <button type="button" onClick={zoomIn} className="px-2 py-1 bg-slate-700 rounded"><ZoomIn className="w-3.5 h-3.5"/></button>
-              <button type="button" onClick={undoGraph} className="px-2 py-1 bg-red-700 hover:bg-red-600 rounded text-[10px] font-black flex items-center gap-1" title="Annuler (Ctrl+Z)"><Undo2 className="w-3.5 h-3.5"/>UNDO</button><button type="button" onClick={()=>{setSelectedNodeIds([]);setSelectedNodeId(null);setSelectedFitting(null)}} className="px-2 py-1 bg-slate-700 rounded text-[10px] font-bold" title="Désélectionner tout">CLEAR</button><button type="button" onClick={resetView} className="px-2 py-1 bg-slate-700 rounded" title="Recentrer"><RefreshCw className="w-3.5 h-3.5"/></button>
+              <button type="button" onClick={undoGraph} className="px-2 py-1 bg-red-700 hover:bg-red-600 rounded text-[10px] font-black flex items-center gap-1" title="Annuler (Ctrl+Z)"><Undo2 className="w-3.5 h-3.5"/>↶</button><button type="button" onClick={()=>{setSelectedNodeIds([]);setSelectedNodeId(null);setSelectedFitting(null)}} className="px-2 py-1 bg-slate-700 rounded text-[10px] font-bold" title="Désélectionner tout">×</button><button type="button" onClick={resetView} className="px-2 py-1 bg-slate-700 rounded" title="Recentrer"><RefreshCw className="w-3.5 h-3.5"/></button>
             </div>
           </div>
           <div className="text-[10px] text-slate-400 flex flex-wrap items-center gap-2 mb-2"><Move className="w-3 h-3"/>MAIN = déplacer la feuille · SÉLECTION = déplacer les éléments · Ctrl/Cmd/Shift+clic = multi-sélection · glisser un groupe = déplacement en bloc · Suppr = supprimer · longueur = saisie directe · déplacer un nœud = recalcul automatique des tronçons · <b className="text-amber-300">R / Shift+R = rotation équipement ±15°</b></div>
 
-          <div className="bg-slate-950 rounded-2xl overflow-hidden border border-slate-800">
-            <svg ref={svgRef} viewBox="0 0 620 400" className="w-full h-[clamp(520px,70vh,820px)] select-none touch-none cursor-crosshair"
+          <div className={`${workspaceFullscreen ? "flex-1 min-h-0" : ""} bg-slate-950 rounded-2xl overflow-hidden border border-slate-800`}>
+            <svg ref={svgRef} viewBox="0 0 620 400" className={`${workspaceFullscreen ? "h-full min-h-[360px]" : "h-[clamp(520px,70vh,820px)]"} w-full select-none touch-none cursor-crosshair`}
               onWheel={wheel} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect="copy"}} onDrop={dropEquipmentOnCanvas}>
               {draggedEquipmentType&&<g pointerEvents="none"><rect x="8" y="8" width="250" height="28" rx="7" fill="#052e16" stroke="#22c55e"/><text x="20" y="26" fill="#86efac" fontSize="10" fontWeight="bold">Déposer sur un tube pour l’intégrer · ailleurs pour le placer</text></g>}
               <defs><marker id="isoArrowV2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#38bdf8"/></marker></defs>
