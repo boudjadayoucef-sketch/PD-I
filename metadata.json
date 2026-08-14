@@ -1,0 +1,6 @@
+{
+  "name": "STG.GTDev",
+  "description": "Plateforme interactive de référence pour la gestion du développement du réseau et le guide des travaux de gaz en Algérie.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
