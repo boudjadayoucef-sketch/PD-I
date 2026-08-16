@@ -1,3 +1,8 @@
+// PD&I PATCH 007e — workspace space/grid/home corrections
+// PD&I PATCH 007d — ISO fullscreen is the main PD&I workspace
+// PD&I PATCH 007c — ISO is the main workspace; home is handled by PdiUnifiedApp
+// PD&I PATCH 007b — ISO embedded by default, public logo handled by SaaS shell
+// PD&I PATCH 007a — shell SaaS branding/fullscreen wording reviewed
 // PD&I PATCH 003 — V4.8d restored
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
@@ -874,6 +879,7 @@ function IsometrieModule() {
   const [interactionMode,setInteractionMode]=useState<"main"|"select">("select");
   // V4.6 — poste de travail
   const [leftPanelOpen,setLeftPanelOpen]=useState(true);
+  // 007d: l'ISO plein écran est le workspace principal de PD&I.
   const [workspaceFullscreen,setWorkspaceFullscreen]=useState(true);
   // V4.8_DARK_WORKSPACE_STUDIO : shell CAO plein écran limité à PD & I.
   const [studioLayout,setStudioLayout]=useState<"design"|"data"|"control">("design");
@@ -1947,8 +1953,8 @@ function IsometrieModule() {
     // Background Isometric Reference Lines
     drawingMarkup += `<g opacity="0.15">`;
     for (let i = 0; i < 25; i++) {
-      drawingMarkup += `<line x1="${i * 35 - 250}" y1="0" x2="${i * 35 + 50}" y2="400" stroke="#0284c7" stroke-width="1"/>`;
-      drawingMarkup += `<line x1="${i * 35 + 250}" y1="0" x2="${i * 35 - 50}" y2="400" stroke="#0284c7" stroke-width="1"/>`;
+      drawingMarkup += `<line x1="${i * 35 - 250}" y1="0" x2="${i * 35 + 50}" y2="520" stroke="#0284c7" stroke-width="1"/>`;
+      drawingMarkup += `<line x1="${i * 35 + 250}" y1="0" x2="${i * 35 - 50}" y2="520" stroke="#0284c7" stroke-width="1"/>`;
     }
     drawingMarkup += `</g>`;
 
@@ -2373,25 +2379,41 @@ function IsometrieModule() {
         [data-pdi-studio] .pdi-rail-button{width:38px;height:38px;border:1px solid transparent;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#9CA3AF;background:#161B22;font-weight:900;font-size:14px}
         [data-pdi-studio] .pdi-rail-button:hover{border-color:#3B82F6;color:#E6EDF3;background:#1C2735}
         [data-pdi-studio] .pdi-rail-button.active{color:white;background:#2563EB;border-color:#60A5FA}
+
+        [data-pdi-studio] button[title]{position:relative}
+        [data-pdi-studio] button[title]:hover::after{content:attr(title);position:absolute;left:50%;top:calc(100% + 8px);transform:translateX(-50%);z-index:10080;min-width:max-content;max-width:260px;padding:6px 8px;border-radius:8px;background:#020617;color:#E6EDF3;border:1px solid rgba(103,232,249,.35);box-shadow:0 14px 35px rgba(0,0,0,.45);font-size:10px;font-weight:900;letter-spacing:.01em;white-space:nowrap;pointer-events:none}
+        [data-pdi-studio] button[title]:hover::before{content:"";position:absolute;left:50%;top:100%;transform:translateX(-50%);border:5px solid transparent;border-bottom-color:rgba(103,232,249,.35);z-index:10081;pointer-events:none}
         [data-pdi-studio] ::-webkit-scrollbar{width:10px;height:10px}[data-pdi-studio] ::-webkit-scrollbar-track{background:#0B0F14}[data-pdi-studio] ::-webkit-scrollbar-thumb{background:#374151;border:2px solid #0B0F14;border-radius:8px}
         @media(max-width:900px){[data-pdi-studio].pdi-studio-root{padding-left:8px!important;padding-top:92px!important}[data-pdi-studio] .pdi-studio-rail{display:none!important}[data-pdi-studio] .pdi-brand-subtitle{display:none}[data-pdi-studio] .pdi-cad-menubar{position:absolute;left:8px;right:8px;bottom:6px;overflow-x:auto;padding-bottom:1px}[data-pdi-studio] .pdi-cad-menu-trigger{font-size:10px;padding:0 8px}[data-pdi-studio] .pdi-svg-logo{min-width:170px!important;max-width:210px!important}}
         @media(max-width:1200px){[data-pdi-studio] .pdi-cad-menu-trigger{padding:0 7px;font-size:10px}}
+
+        [data-pdi-studio] .pdi-compact-metrics, [data-pdi-studio] .pdi-metric-card{min-height:52px!important;padding:8px 10px!important;border-radius:14px!important}
+        [data-pdi-studio] .pdi-compact-metrics h3, [data-pdi-studio] .pdi-metric-card h3{font-size:9px!important;margin:0!important}
+        [data-pdi-studio] .pdi-compact-metrics strong, [data-pdi-studio] .pdi-metric-card strong{font-size:18px!important;line-height:1!important}
+        [data-pdi-studio] button[title]{position:relative}
+        [data-pdi-studio] button[title]:hover::after{content:attr(title);position:absolute;left:50%;top:calc(100% + 8px);transform:translateX(-50%);z-index:10080;min-width:max-content;max-width:260px;padding:6px 8px;border-radius:8px;background:#020617;color:#E6EDF3;border:1px solid rgba(103,232,249,.35);box-shadow:0 14px 35px rgba(0,0,0,.45);font-size:10px;font-weight:900;white-space:nowrap;pointer-events:none}
+        [data-pdi-studio] .pdi-status-docked{height:28px!important;min-height:28px!important;padding-top:3px!important;padding-bottom:3px!important}
       `}</style>
       {workspaceFullscreen&&<>
-        <header className="pdi-studio-topbar fixed left-0 right-0 top-0 z-[10010] h-[54px] px-3 flex items-center justify-between gap-3 text-slate-100">
+        <header className="pdi-studio-topbar fixed left-0 right-0 top-0 z-[10008] h-[54px] px-3 flex items-center justify-between gap-3 text-white">
+              <div className="pdi-top-iso-title-007e hidden lg:flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950/60 px-3 py-1 text-[10px] font-black uppercase text-cyan-200" title="Vue isométrique 30°">
+                ↗ Vue isométrique 30° · {Math.round(viewport.zoom * 100)}%
+              </div>
           <div className="flex items-center min-w-0 gap-3">
+
+          
             <button
               type="button"
               onClick={() => setAboutOpen(true)}
               className="shrink-0 rounded-lg border border-cyan-500/25 bg-black/50 px-2 py-1 transition-all hover:border-cyan-400/50 hover:bg-black/70 flex items-center"
-              title="À propos de PD & I"
+              title="À propos de PD&I"
             >
               <img
                 src={PDI_LOGO_HORIZONTAL_SRC}
                 onError={(e) => {
                   (e.currentTarget as HTMLImageElement).src = PDI_LOGO_HORIZONTAL_DATA_URL;
                 }}
-                alt="PD & I — Pipeline Design & Isometrics"
+                alt="PD&I — Piping Design & Isometrics"
                 className="pdi-brand-logo"
                 loading="eager"
                 decoding="sync"
@@ -2429,7 +2451,7 @@ function IsometrieModule() {
           <div className="flex items-center gap-2">
             <div className="hidden xl:flex items-center gap-3 text-[10px] text-slate-400"><span>{nodes.length} nœuds</span><span>{segments.length} tronçons</span><span className={graphErrorCount?"text-red-400":"text-emerald-400"}>{graphErrorCount?`${graphErrorCount} erreur(s)`:"Graphe valide"}</span></div>
             <button onClick={()=>setCommandPaletteOpen(true)} className="h-8 px-2 rounded-md border border-slate-700 bg-slate-800 text-[10px] font-black" title="Palette commandes">⌘K</button>
-            <button onClick={()=>setWorkspaceFullscreen(false)} className="h-8 w-8 rounded-md border border-red-500/40 bg-red-500/10 text-red-300 text-sm font-black" title="Quitter PD & I">×</button>
+            
           </div>
         </header>
         <aside className="pdi-studio-rail fixed bottom-0 left-0 top-[54px] z-[10005] w-[62px] py-3 flex flex-col items-center gap-2">
@@ -2471,7 +2493,7 @@ function IsometrieModule() {
                 onError={(e) => {
                   (e.currentTarget as HTMLImageElement).src = PDI_LOGO_SQUARE_DATA_URL;
                 }}
-                alt="Logo PD & I — Pipeline Design & Isometrics"
+                alt="Logo PD&I — Piping Design & Isometrics"
                 className="pdi-about-logo"
                 loading="eager"
                 decoding="sync"
@@ -2558,7 +2580,7 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
           >
             M Cotation
           </button></div>
-      <div className="flex items-center gap-1"><button onClick={undoGraph} className="h-9 px-3 rounded-lg bg-slate-100 text-xs font-black">↶ Ctrl+Z</button><button onClick={exportProjectJson} className="h-9 px-3 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-black">Sauver JSON</button><input ref={importProjectRef} type="file" accept="application/json,.json" className="hidden" onChange={e=>{importProjectJson(e.target.files?.[0]);e.currentTarget.value=""}}/><button onClick={()=>importProjectRef.current?.click()} className="h-9 px-3 rounded-lg bg-blue-50 text-blue-700 text-xs font-black">Ouvrir JSON</button><button onClick={()=>setCommandPaletteOpen(true)} className="h-9 px-3 rounded-lg bg-slate-900 text-white text-xs font-black">Ctrl+K</button><button onClick={()=>setShortcutsOpen(true)} className="h-9 w-9 rounded-lg bg-slate-100 font-black">?</button><button onClick={()=>setWorkspaceFullscreen(v=>!v)} className="h-9 px-3 rounded-lg bg-blue-50 text-blue-700 text-xs font-black">{workspaceFullscreen?"Quitter plein écran":"Plein écran"}</button></div>
+      <div className="flex items-center gap-1"><button onClick={undoGraph} className="h-9 px-3 rounded-lg bg-slate-100 text-xs font-black">↶ Ctrl+Z</button><button onClick={exportProjectJson} className="h-9 px-3 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-black">Sauver JSON</button><input ref={importProjectRef} type="file" accept="application/json,.json" className="hidden" onChange={e=>{importProjectJson(e.target.files?.[0]);e.currentTarget.value=""}}/><button onClick={()=>importProjectRef.current?.click()} className="h-9 px-3 rounded-lg bg-blue-50 text-blue-700 text-xs font-black">Ouvrir JSON</button><button onClick={()=>setCommandPaletteOpen(true)} className="h-9 px-3 rounded-lg bg-slate-900 text-white text-xs font-black">Ctrl+K</button><button onClick={()=>setShortcutsOpen(true)} className="h-9 w-9 rounded-lg bg-slate-100 font-black">?</button><button onClick={()=>setWorkspaceFullscreen(v=>!v)} className="h-9 px-3 rounded-lg bg-blue-50 text-blue-700 text-xs font-black">{workspaceFullscreen?"Retour accueil":"Mode focus"}</button></div>
     </div>
 
         {isoMode==="planche" && <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-4 mb-4">
@@ -2687,7 +2709,7 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
       <div className={`${leftPanelOpen?"lg:col-span-9":"lg:col-span-12"} ${workspaceFullscreen ? "h-full min-h-0" : ""}`}>
         <div className={`${workspaceFullscreen ? "h-full min-h-0 flex flex-col overflow-hidden" : ""} bg-slate-900 rounded-3xl border-2 border-slate-800 p-3 shadow-2xl`}>
           <div className="flex flex-wrap justify-between gap-2 text-white border-b border-slate-800 pb-3 mb-2">
-            <div className="flex items-center gap-2"><Maximize2 className="w-4 h-4 text-blue-400"/><span className="text-xs font-black uppercase">Vue isométrique 30°</span><span className="text-[10px] font-mono bg-slate-800 px-2 py-1 rounded">{Math.round(viewport.zoom*100)}%</span></div>
+            <div className="flex items-center gap-2"><span className="hidden">Vue isométrique 30°</span><span className="text-[10px] font-mono bg-slate-800 px-2 py-1 rounded">{Math.round(viewport.zoom*100)}%</span></div>
             <div className="w-full xl:w-auto min-w-0 flex flex-wrap justify-start xl:justify-end items-center gap-1">
 
             <div className="flex shrink-0 gap-1"><button type="button" onClick={()=>setIsoMode("editor")} className={`px-2 py-1 rounded text-[9px] font-black ${isoMode==="editor"?"bg-blue-600":"bg-slate-700"}`}>ÉDITEUR</button><button type="button" onClick={()=>setIsoMode("planche")} className={`px-2 py-1 rounded text-[9px] font-black ${isoMode==="planche"?"bg-blue-600":"bg-slate-700"}`}>PLANCHE ISO</button></div>
@@ -2715,7 +2737,7 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
               <button type="button" onClick={undoGraph} className="px-2 py-1 bg-red-700 hover:bg-red-600 rounded text-[10px] font-black flex items-center gap-1" title="Annuler (Ctrl+Z)"><Undo2 className="w-3.5 h-3.5"/>↶</button><button type="button" onClick={()=>{setSelectedNodeIds([]);setSelectedNodeId(null);setSelectedFitting(null)}} className="px-2 py-1 bg-slate-700 rounded text-[10px] font-bold" title="Désélectionner tout">×</button><button type="button" onClick={resetView} className="px-2 py-1 bg-slate-700 rounded" title="Recentrer"><RefreshCw className="w-3.5 h-3.5"/></button>
             </div>
           </div>
-          <div className="text-[10px] text-slate-400 flex flex-wrap items-center gap-2 mb-2"><Move className="w-3 h-3"/>MAIN = déplacer la feuille · SÉLECTION = déplacer les éléments · Ctrl/Cmd/Shift+clic = multi-sélection · glisser un groupe = déplacement en bloc · Suppr = supprimer · longueur = saisie directe · déplacer un nœud = recalcul automatique des tronçons · <b className="text-amber-300">R / Shift+R = rotation équipement ±15°</b></div>
+          
 
           <div className={`${workspaceFullscreen ? "flex-1 min-h-0" : ""} bg-slate-950 rounded-2xl overflow-hidden border border-slate-800`}>
             <svg ref={svgRef} viewBox="0 0 620 400" className={`${workspaceFullscreen ? "h-full min-h-[360px]" : "h-[clamp(520px,70vh,820px)]"} w-full select-none touch-none cursor-crosshair`}
@@ -2724,8 +2746,8 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
               <defs><marker id="isoArrowV2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#38bdf8"/></marker></defs>
               {gcVisibleEditor && gcUnderlay && <g pointerEvents="none"><image href={gcUnderlay} x={60+gcX} y={45+gcY} width={500*gcScale} height={300*gcScale} opacity={gcOpacity} preserveAspectRatio="none"/></g>}
 
-              {showGrid&&<g opacity=".13">{Array.from({length:30}).map((_,i)=><line key={"a"+i} x1={i*35-250} y1="0" x2={i*35+50} y2="400" stroke="#38bdf8"/>)}
-                {Array.from({length:30}).map((_,i)=><line key={"b"+i} x1={i*35+250} y1="0" x2={i*35-50} y2="400" stroke="#38bdf8"/>)}</g>}
+              {showGrid&&<g opacity=".13">{Array.from({length:80}).map((_,i)=><line key={"a"+i} x1={i*35-1000} y1="0" x2={i*35+600} y2="520" stroke="#38bdf8"/>)}
+                {Array.from({length:80}).map((_,i)=><line key={"b"+i} x1={i*35+1000} y1="0" x2={i*35-600} y2="520" stroke="#38bdf8"/>)}</g>}
 
               <g>
                 {segments.map(s=>{
@@ -2841,11 +2863,11 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
 
           {isoDrawMode!=="select"&&<div className="mt-3 bg-blue-950 border border-blue-700 rounded-xl p-3 text-[10px] text-blue-100"><b>MODE {isoDrawMode.toUpperCase()}</b>{" — "}{isoDrawMode==="node"&&"cliquez dans le plan pour créer un nœud."}{isoDrawMode==="segment"&&"cliquez un nœud origine puis un nœud destination."}{isoDrawMode==="te"&&"Té : cliquez un port violet/vert puis glissez jusqu’à un nœud ou relâchez pour créer un piquage."}{isoDrawMode==="coude"&&"cliquez le repère orange sur un tronçon."}
                 {isoDrawMode==="dimension"&&"cliquez deux nœuds ou ports pour créer une cotation persistante."}</div>}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
-            <div className="bg-slate-950 rounded-xl p-3 text-center"><span className="block text-[9px] text-slate-400 uppercase">Métré tube</span><strong className="text-blue-400 font-mono">{totalLength.toFixed(2)} m</strong></div>
-            <div className="bg-slate-950 rounded-xl p-3 text-center"><span className="block text-[9px] text-slate-400 uppercase">Poids acier</span><strong className="text-amber-400 font-mono">{totalWeight.toFixed(1)} kg</strong></div>
-            <div className="bg-slate-950 rounded-xl p-3 text-center"><span className="block text-[9px] text-slate-400 uppercase">Volume épreuve</span><strong className="text-emerald-400 font-mono">{totalVolume.toFixed(1)} L</strong></div>
-            <div className="bg-slate-950 rounded-xl p-3 text-center"><span className="block text-[9px] text-slate-400 uppercase">Épreuve</span><strong className="text-red-400 font-mono">{hydrotest.toFixed(1)} bar</strong></div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mt-2">
+            <div className="bg-slate-950/90 border border-slate-800 rounded-lg py-1.5 px-2 text-center"><span className="block text-[8px] font-bold text-slate-400 uppercase">Métré tube</span><strong className="text-blue-400 font-mono text-sm">{totalLength.toFixed(2)} m</strong></div>
+            <div className="bg-slate-950/90 border border-slate-800 rounded-lg py-1.5 px-2 text-center"><span className="block text-[8px] font-bold text-slate-400 uppercase">Poids acier</span><strong className="text-amber-400 font-mono text-sm">{totalWeight.toFixed(1)} kg</strong></div>
+            <div className="bg-slate-950/90 border border-slate-800 rounded-lg py-1.5 px-2 text-center"><span className="block text-[8px] font-bold text-slate-400 uppercase">Vol. épreuve</span><strong className="text-emerald-400 font-mono text-sm">{totalVolume.toFixed(1)} L</strong></div>
+            <div className="bg-slate-950/90 border border-slate-800 rounded-lg py-1.5 px-2 text-center"><span className="block text-[8px] font-bold text-slate-400 uppercase">Épreuve</span><strong className="text-red-400 font-mono text-sm">{hydrotest.toFixed(1)} bar</strong></div>
           </div>
         </div>
 

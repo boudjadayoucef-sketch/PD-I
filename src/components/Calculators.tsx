@@ -81,6 +81,14 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 
+
+/* 008e PD&I precision helper — utiliser clientX/clientY + getBoundingClientRect, pas offsetX/offsetY */
+function pdiGetCanvasLocalPoint008e(event: any, canvas: any) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+
 interface Project {
   id: string;
   name: string;

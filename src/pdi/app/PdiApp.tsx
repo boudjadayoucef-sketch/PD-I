@@ -1,6 +1,7 @@
 // PD&I PATCH 005 — Interface logiciel professionnelle française
 import React, { useState } from "react";
 import PdiIsometricEditor from "../isometric/PdiIsometricEditor";
+import PdiBrandMark from "./PdiBrandMark";
 
 type Mode = "conception" | "donnees" | "controle";
 type Workspace = "accueil" | "projets" | "isometries" | "cad" | "ia";
@@ -76,7 +77,7 @@ export default function PdiApp() {
             className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-800"
             title="Accueil PD&I"
           >
-            <span className="grid h-7 w-7 place-items-center rounded-md border border-slate-700 bg-slate-900 text-[10px] font-bold text-cyan-400">PD&I</span>
+            <PdiBrandMark className="pdi-shell-brand-single" variant="horizontal" size="sm" />
             <span className="hidden text-left sm:block">
               <span className="block text-sm font-semibold leading-4">PD&I</span>
               <span className="block text-[9px] uppercase tracking-wider text-slate-600">Piping Design & Isometrics</span>
