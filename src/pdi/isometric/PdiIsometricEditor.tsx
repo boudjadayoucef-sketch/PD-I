@@ -3,8 +3,8 @@
  *
  * PATCH 006
  *
- * Le moteur V4.8d est volontairement conservé intact.
- * Ce composant ne fait qu'exposer directement son workspace.
+ * Le moteur V4.8d est conservé comme moteur d'édition existant.
+ * Ce composant fournit une frontière stable pour le workspace SaaS ISO.
  */
 
 import React from "react";
@@ -17,7 +17,7 @@ export default function PdiIsometricEditor() {
       style={{
         width: "100%",
         height: "100%",
-        minHeight: "100vh",
+        minHeight: 0,
         overflow: "hidden",
         position: "relative",
       }}
