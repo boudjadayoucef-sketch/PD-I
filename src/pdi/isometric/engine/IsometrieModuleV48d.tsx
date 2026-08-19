@@ -18,7 +18,10 @@ import {
 import {
   Compass, Plus, Trash2, Printer, FileText, Layers, Ruler,
   RefreshCw, Maximize2, ZoomIn, ZoomOut, Move, Pencil, Save,
-  X, GitBranch, Settings2, CircleDot, Flame, Waypoints, Info, Hand, MousePointer2, Undo2
+  X, GitBranch, Settings2, CircleDot, Flame, Waypoints, Info, Hand, MousePointer2, Undo2, Redo2,
+  ChevronLeft, ChevronRight, SlidersHorizontal, Disc, CornerDownRight, GitFork, ArrowRightLeft,
+  Eye, EyeOff, Crosshair, Check, Copy, Scissors, RotateCw, RotateCcw, PanelRightClose, PanelRightOpen,
+  Circle, Spline, FolderOpen, Download, LayoutGrid, Magnet
 } from "lucide-react";
 
 export type IsoNodeType =
@@ -45,6 +48,7 @@ export interface IsoNode {
   bendDirection?: 1 | -1;
   length?: number;
   ports?: IsoPort[];
+  lineId?: string;
 }
 
 export type IsoFittingType =
@@ -609,11 +613,28 @@ const isoProjectV4 = (x:number,y:number,z:number,zoom:number,panX:number,panY:nu
   };
 };
 
-const isoUnprojectV4 = (sx:number,sy:number,zoom:number,panX:number,panY:number) => {
+const isoUnprojectV4 = (sx:number,sy:number,zoom:number,panX:number,panY:number,targetZ:number=0) => {
   const scale=Math.max(1,28*zoom), a=Math.PI/6;
   const u=(sx-310-panX)/(Math.cos(a)*scale);
-  const v=(sy-210-panY)/(Math.sin(a)*scale);
-  return {x:(u+v)/2,y:(v-u)/2,z:0};
+  const v=(sy+targetZ*scale-210-panY)/(Math.sin(a)*scale);
+  return {x:(u+v)/2,y:(v-u)/2,z:targetZ};
+};
+
+const getSvgCoordinates = (clientX:number, clientY:number, svg:SVGSVGElement|null) => {
+  if (!svg) return { sx: 310, sy: 200 };
+  const ctm = svg.getScreenCTM();
+  if (ctm) {
+    const pt = svg.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const transformed = pt.matrixTransform(ctm.inverse());
+    return { sx: transformed.x, sy: transformed.y };
+  }
+  const r = svg.getBoundingClientRect();
+  return {
+    sx: (clientX - r.left) * (620 / (r.width || 1)),
+    sy: (clientY - r.top) * (400 / (r.height || 1)),
+  };
 };
 
 const snapIsoV4=(v:number,step:number)=>step>0?Math.round(v/step)*step:v;
@@ -641,6 +662,43 @@ const isoPolylineV4=(s:IsoSegment,a:IsoNode,b:IsoNode,zoom:number,panX:number,pa
 
 const isoPathV4=(points:Array<{x:number;y:number}>)=>
   points.map((p,i)=>`${i===0?"M":"L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
+
+function lineSegmentIntersectsBox(
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+): boolean {
+  if ((p1.x >= minX && p1.x <= maxX && p1.y >= minY && p1.y <= maxY) ||
+      (p2.x >= minX && p2.x <= maxX && p2.y >= minY && p2.y <= maxY)) {
+    return true;
+  }
+  if (Math.max(p1.x, p2.x) < minX || Math.min(p1.x, p2.x) > maxX ||
+      Math.max(p1.y, p2.y) < minY || Math.min(p1.y, p2.y) > maxY) {
+    return false;
+  }
+  const ccw = (a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }) =>
+    (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
+  const intersect = (
+    a: { x: number; y: number },
+    b: { x: number; y: number },
+    c: { x: number; y: number },
+    d: { x: number; y: number },
+  ) =>
+    ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+
+  const tl = { x: minX, y: minY };
+  const tr = { x: maxX, y: minY };
+  const br = { x: maxX, y: maxY };
+  const bl = { x: minX, y: maxY };
+
+  return intersect(p1, p2, tl, tr) ||
+         intersect(p1, p2, tr, br) ||
+         intersect(p1, p2, br, bl) ||
+         intersect(p1, p2, bl, tl);
+}
 
 
 
@@ -829,14 +887,19 @@ function IsometrieModule() {
       offset: dimension.offset ? { ...dimension.offset } : undefined,
     })),
   });
-  const pushHistory=()=>{
-    if(historyBusyRef.current)return;
-    const snap=cloneGraph(nodes,segments,lines,dimensions);
-    const h=historyRef.current;
-    const last=h[h.length-1];
-    if(last&&JSON.stringify(last)===JSON.stringify(snap))return;
+  const historyRef = useRef<Array<{ nodes: IsoNode[]; segments: IsoSegment[]; lines: PipingLine[]; dimensions: IsoDimension[] }>>([]);
+  const redoRef = useRef<Array<{ nodes: IsoNode[]; segments: IsoSegment[]; lines: PipingLine[]; dimensions: IsoDimension[] }>>([]);
+  const historyBusyRef = useRef(false);
+
+  const pushHistory = () => {
+    if (historyBusyRef.current) return;
+    const snap = cloneGraph(nodes, segments, lines, dimensions);
+    const h = historyRef.current;
+    const last = h[h.length - 1];
+    if (last && JSON.stringify(last) === JSON.stringify(snap)) return;
     h.push(snap);
-    if(h.length>60)h.shift();
+    if (h.length > 60) h.shift();
+    redoRef.current = [];
   };
   const setNodes=(next:IsoNode[]|((prev:IsoNode[])=>IsoNode[]))=>{
     if(!historyBusyRef.current)pushHistory();
@@ -933,8 +996,25 @@ function IsometrieModule() {
   }|null>(null);
   const dragChangedRef=useRef(false);
   const lastEquipmentDropRef=useRef<{key:string;at:number}|null>(null);
-  const historyRef=useRef<Array<{nodes:IsoNode[];segments:IsoSegment[];lines:PipingLine[];dimensions:IsoDimension[]}>>([]);
-  const historyBusyRef=useRef(false);
+
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    type: "node" | "segment" | "fitting" | "canvas";
+    id?: string;
+    data?: any;
+  } | null>(null);
+  const [hoveredEntity, setHoveredEntity] = useState<{
+    type: "node" | "segment" | "fitting" | "port";
+    id: string;
+    label?: string;
+  } | null>(null);
+  const [activeSnap, setActiveSnap] = useState<{
+    kind: "PORT" | "ENDPOINT" | "MIDPOINT" | "AXIS" | "GRID";
+    label: string;
+    worldPos: { x: number; y: number; z: number };
+    screenPos: { x: number; y: number };
+  } | null>(null);
 
   const [projectName,setProjectName]=useState("Schéma isométrique tuyauterie gaz");
   const [wilaya,setWilaya]=useState("Alger / GRTG Region Centre");
@@ -978,26 +1058,107 @@ function IsometrieModule() {
   const [edit,setEdit]=useState<{segmentId:string;fitting:IsoFitting}|null>(null);
   const svgRef=useRef<SVGSVGElement>(null);
 
-  // === ISO V4 : édition graphique ===
+  // === ISO V4 : édition graphique & sélections ===
   const [isoDrawMode,setIsoDrawMode]=useState<IsoDrawMode>("select");
   const [drawStartNodeId,setDrawStartNodeId]=useState<string|null>(null);
   const [gcVisibleEditor,setGcVisibleEditor]=useState(true);
-  const [isoSnapStep,setIsoSnapStep]=useState(.5);
+  const [isoSnapStep,setIsoSnapStep]=useState(.25);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [snapPorts, setSnapPorts] = useState(true);
+  const [snapEndpoints, setSnapEndpoints] = useState(true);
+  const [snapMidpoints, setSnapMidpoints] = useState(true);
+  const [snapGrid, setSnapGrid] = useState(true);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [rightPanelTab, setRightPanelTab] = useState<"properties" | "bom" | "dimensions" | "snap" | "layers">("properties");
+  const [selectedDimensionId, setSelectedDimensionId] = useState<string | null>(null);
   const [dragNodeId,setDragNodeId]=useState<string|null>(null);
   const [dragFittingInfo,setDragFittingInfo]=useState<{segmentId:string;fittingId:string}|null>(null);
   const [nodeZ, setNodeZ] = useState<number>(0);
   const [branchDrawing, setBranchDrawing] = useState<{fromNodeId:string; fromPortId?:string; handleIndex?:number; currentWorldPos:{x:number;y:number;z:number}}|null>(null);
   const [dimensionPick, setDimensionPick] = useState<IsoDimensionAnchor | null>(null);
 
+  // ===== PATCH 004 : edition professionnelle =====
+  // Menu contextuel (clic droit) et panneau de proprietes.
+  const [ctxMenu,setCtxMenu]=useState<{x:number;y:number}|null>(null);
+  const [propsOpen,setPropsOpen]=useState(false);
+  // Un geste souris = une seule entree d'historique (operation logique).
+  const gestureDirtyRef=useRef(false);
+  const [marquee, setMarquee] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
+  const marqueeRef = useRef<{
+    startX: number;
+    startY: number;
+    additive: boolean;
+    baselineNodeIds: string[];
+    baselineSegIds: string[];
+    active: boolean;
+  } | null>(null);
+  const [propertiesModalOpen, setPropertiesModalOpen] = useState(false);
+  const [propertiesActiveTab, setPropertiesActiveTab] = useState<"all" | "segments" | "nodes" | "fittings" | "bom" | "welds">("all");
+  const [propertiesSearch, setPropertiesSearch] = useState("");
+  const clipboardRef = useRef<{ nodes: IsoNode[]; segments: IsoSegment[] } | null>(null);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if((e.key==="Delete"||e.key==="Backspace") && !(e.target as HTMLElement)?.matches("input,textarea,select")){
+      const isInput = (e.target as HTMLElement)?.matches("input,textarea,select");
+      if((e.key==="Delete"||e.key==="Backspace") && !isInput){
         e.preventDefault();
         deleteSelection();
         return;
       }
-      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){
-        e.preventDefault(); undoGraph(); setStatusMessage("Annulation effectuée"); return;
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z" && !isInput){
+        e.preventDefault();
+        if(e.shiftKey) {
+          redoGraph();
+        } else {
+          undoGraph();
+        }
+        return;
+      }
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="y" && !isInput){
+        e.preventDefault();
+        redoGraph();
+        return;
+      }
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="c" && !isInput){
+        e.preventDefault();
+        copySelection();
+        return;
+      }
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="x" && !isInput){
+        e.preventDefault();
+        cutSelection();
+        return;
+      }
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="v" && !isInput){
+        e.preventDefault();
+        pasteClipboard();
+        return;
+      }
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="d" && !isInput){
+        e.preventDefault();
+        duplicateSelection();
+        return;
+      }
+      if(e.key.startsWith("Arrow") && selectedNodeIds.length && !(e.target as HTMLElement)?.matches("input,textarea,select")){
+        e.preventDefault();
+        const step=e.shiftKey?Math.max(isoSnapStep,.25)*4:Math.max(isoSnapStep,.25);
+        if(e.altKey){
+          if(e.key==="ArrowUp")moveSelection(0,0,step);
+          if(e.key==="ArrowDown")moveSelection(0,0,-step);
+        }else{
+          if(e.key==="ArrowLeft")moveSelection(-step,0,0);
+          if(e.key==="ArrowRight")moveSelection(step,0,0);
+          if(e.key==="ArrowUp")moveSelection(0,-step,0);
+          if(e.key==="ArrowDown")moveSelection(0,step,0);
+        }
+        return;
+      }
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="a" && !isInput){
+        e.preventDefault();
+        setSelectedNodeIds(nodes.map(n=>n.id));
+        setSelectedSegmentIds(segments.map(s=>s.id));
+        setStatusMessage(`Tout sélectionné (${nodes.length} nœuds, ${segments.length} tronçons)`);
+        return;
       }
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){
         e.preventDefault(); exportProjectJson(); return;
@@ -1005,7 +1166,7 @@ function IsometrieModule() {
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){
         e.preventDefault(); setCommandPaletteOpen(v=>!v); return;
       }
-      if((e.target as HTMLElement)?.matches("input,textarea,select")) return;
+      if(isInput) return;
       const key=e.key.toLowerCase();
       if(key==="v"){setInteractionMode("select");setIsoDrawMode("select");setStatusMessage("Outil Sélection");return;}
       if(key==="h"||e.code==="Space"){e.preventDefault();setInteractionMode("main");setStatusMessage("Outil Main");return;}
@@ -1013,10 +1174,22 @@ function IsometrieModule() {
       if(key==="t"){setIsoDrawMode("segment");setInteractionMode("select");setStatusMessage("Création de tube");return;}
       if(key==="e"){setIsoDrawMode("te");setInteractionMode("select");setStatusMessage("Création de Té");return;}
       if(key==="c"){setIsoDrawMode("coude");setInteractionMode("select");setStatusMessage("Insertion de coude");return;}
+      if(key==="r"){
+        e.preventDefault();
+        const delta = e.shiftKey ? -15 : 15;
+        rotateSelectedEquipment(delta);
+        return;
+      }
       if(key==="g"){setShowGrid(v=>!v);return;}
       if(key==="d"){setShowDimensions(v=>!v);return;}
       if(key==="l"){setShowLabels(v=>!v);return;}
-      if(key==="0"||key==="f"){resetView();setStatusMessage("Vue recentrée");return;}
+      // PATCH 004 : "F" servait a la fois a recentrer la vue et a retourner
+      // l'equipement selectionne. Le retournement devient prioritaire
+      // quand un equipement est selectionne.
+      if(key==="0"){resetView();setStatusMessage("Vue recentrée");return;}
+      if(key==="f"&&!selectedNodeIds.some(id=>nodes.find(n=>n.id===id)?.equipmentType)){
+        resetView();setStatusMessage("Vue recentrée");return;
+      }
       if(key==="+"||key==="="){zoomIn();return;}
       if(key==="-"){zoomOut();return;}
       if(key==="?"){setShortcutsOpen(true);return;}
@@ -1029,6 +1202,9 @@ function IsometrieModule() {
         dragSelectionRef.current=null;
         clearSelection();
         setIsoDrawMode("select");
+        setContextMenu(null);
+        setMarquee(null);
+        setStatusMessage("Sélection et outil réinitialisés");
       }
     };
     window.addEventListener("keydown",onKeyDown);
@@ -1049,42 +1225,84 @@ function IsometrieModule() {
   const graphErrorCount=graphIssues.filter(i=>i.severity==="error").length;
   const graphWarningCount=graphIssues.filter(i=>i.severity==="warning").length;
 
-  const resetView=()=>setViewport({zoom:1,panX:0,panY:0});
+  const resetView=()=>{
+    if(!nodes.length){
+      setViewport({zoom:1,panX:0,panY:0});
+      setStatusMessage("Vue recentrée (défaut)");
+      return;
+    }
+    const pts=nodes.map(n=>isoProjectV4(n.x,n.y,n.z||0,1,0,0));
+    const minX=Math.min(...pts.map(p=>p.x));
+    const maxX=Math.max(...pts.map(p=>p.x));
+    const minY=Math.min(...pts.map(p=>p.y));
+    const maxY=Math.max(...pts.map(p=>p.y));
+    const spanX=maxX-minX;
+    const spanY=maxY-minY;
+    if(spanX<10&&spanY<10){
+      const centerX=(minX+maxX)/2;
+      const centerY=(minY+maxY)/2;
+      setViewport({zoom:1,panX:Math.round(310-centerX),panY:Math.round(200-centerY)});
+      setStatusMessage("Vue centrée sur le modèle");
+      return;
+    }
+    const availW=620-100;
+    const availH=400-80;
+    const fitZoom=clamp(Math.min(availW/(spanX||1),availH/(spanY||1)),0.4,2.5);
+    const midX=(minX+maxX)/2;
+    const midY=(minY+maxY)/2;
+    const panX=-(midX-310)*fitZoom;
+    const panY=-(midY-200)*fitZoom;
+    setViewport({zoom:Number(fitZoom.toFixed(2)),panX:Math.round(panX),panY:Math.round(panY)});
+    setStatusMessage("Vue ajustée au modèle");
+  };
   const zoomIn=()=>setViewport(v=>({...v,zoom:clamp(v.zoom*1.2,.35,4)}));
   const zoomOut=()=>setViewport(v=>({...v,zoom:clamp(v.zoom/1.2,.35,4)}));
+
+  // PATCH 004 : application d'un instantane, partagee par undo et redo.
+  const applyGraphSnapshot=(snap:{nodes:IsoNode[];segments:IsoSegment[];lines:PipingLine[];dimensions:IsoDimension[]})=>{
+    historyBusyRef.current=true;
+    setNodesRaw(snap.nodes);
+    setSegmentsRaw(snap.segments);
+    setLinesRaw(snap.lines);
+    setDimensionsRaw(snap.dimensions || []);
+    setSelectedNodeIds([]);
+    setSelectedSegmentIds([]);
+    setSelectedFittingIds([]);
+    setSelectedNodeId(null);
+    setSelectedSegmentId(null);
+    setSelectedFitting(null);
+    setCtxMenu(null);
+    setTimeout(()=>{historyBusyRef.current=false;},0);
+  };
 
   const undoGraph=()=>{
     const h=historyRef.current;
     if(!h.length)return;
     const snap=h.pop();
     if(!snap)return;
-    historyBusyRef.current=true;
-    setNodesRaw(snap.nodes);
-    setSegmentsRaw(snap.segments);
-    setLinesRaw(snap.lines);
-    setDimensionsRaw((snap as any).dimensions || []);
-    setSelectedNodeIds([]);
-    setSelectedNodeId(null);
-    setSelectedSegmentId(null);
-    setSelectedFitting(null);
-    setTimeout(()=>{historyBusyRef.current=false;},0);
+    // On memorise l'etat courant pour pouvoir refaire.
+    redoRef.current.push(cloneGraph(nodes,segments,lines,dimensions));
+    if(redoRef.current.length>60)redoRef.current.shift();
+    applyGraphSnapshot(snap);
+    setStatusMessage("Annulation effectuée");
+  };
+
+  const redoGraph=()=>{
+    const r=redoRef.current;
+    if(!r.length)return;
+    const snap=r.pop();
+    if(!snap)return;
+    historyRef.current.push(cloneGraph(nodes,segments,lines,dimensions));
+    applyGraphSnapshot(snap);
+    setStatusMessage("Rétablissement effectué");
   };
 
   const toggleNodeSelection=(id:string,additive:boolean)=>{
-    if(additive){
-      setSelectedNodeIds(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id]);
-      setSelectedNodeId(id);
-    }else{
-      setSelectedNodeIds([id]);
-      setSelectedNodeId(id);
-    }
+    selectNodeV44(id,additive);
   };
 
   const selectFitting=(segmentId:string,fittingId:string)=>{
-    setSelectedFitting({segmentId,fittingId});
-    setSelectedSegmentId(segmentId);
-    setSelectedNodeId(null);
-    setSelectedNodeIds([]);
+    selectFittingV44(segmentId,fittingId,false);
   };
 
   const snapBranchWorld=(w:{x:number;y:number;z:number})=>({
@@ -1111,39 +1329,77 @@ function IsometrieModule() {
     setSelectedNodeIds([]);
     setSelectedSegmentIds([]);
     setSelectedFittingIds([]);
+    setSelectedFitting(null);
+    setSelectedDimensionId(null);
   };
 
   const selectNodeV44=(id:string,additive:boolean)=>{
-    setSelectedFittingIds([]);
-    setSelectedSegmentIds([]);
     if(additive){
-      setSelectedNodeIds(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id]);
+      setSelectedNodeIds(prev=>{
+        const exists=prev.includes(id);
+        const next=exists?prev.filter(x=>x!==id):[...prev,id];
+        setSelectedNodeId(next.length?next[next.length-1]:null);
+        return next;
+      });
     }else{
       setSelectedNodeIds([id]);
+      setSelectedNodeId(id);
+      setSelectedSegmentIds([]);
+      setSelectedSegmentId(null);
+      setSelectedFittingIds([]);
+      setSelectedFitting(null);
+      setSelectedDimensionId(null);
     }
-    setSelectedNodeId(id);
   };
 
   const selectSegmentV44=(id:string,additive:boolean)=>{
-    setSelectedNodeIds([]);
-    setSelectedFittingIds([]);
     if(additive){
-      setSelectedSegmentIds(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id]);
+      setSelectedSegmentIds(prev=>{
+        const exists=prev.includes(id);
+        const next=exists?prev.filter(x=>x!==id):[...prev,id];
+        setSelectedSegmentId(next.length?next[next.length-1]:null);
+        return next;
+      });
     }else{
       setSelectedSegmentIds([id]);
+      setSelectedSegmentId(id);
+      setSelectedNodeIds([]);
+      setSelectedNodeId(null);
+      setSelectedFittingIds([]);
+      setSelectedFitting(null);
+      setSelectedDimensionId(null);
     }
-    setSelectedSegmentId(id);
   };
 
   const selectFittingV44=(segmentId:string,fittingId:string,additive:boolean)=>{
-    setSelectedNodeIds([]);
-    setSelectedSegmentIds([]);
     if(additive){
-      setSelectedFittingIds(prev=>prev.includes(fittingId)?prev.filter(x=>x!==fittingId):[...prev,fittingId]);
+      setSelectedFittingIds(prev=>{
+        const exists=prev.includes(fittingId);
+        const next=exists?prev.filter(x=>x!==fittingId):[...prev,fittingId];
+        setSelectedFitting(next.length?{segmentId,fittingId:next[next.length-1]}:null);
+        return next;
+      });
     }else{
       setSelectedFittingIds([fittingId]);
+      setSelectedFitting({segmentId,fittingId});
+      setSelectedSegmentId(segmentId);
+      setSelectedNodeIds([]);
+      setSelectedNodeId(null);
+      setSelectedSegmentIds([]);
+      setSelectedDimensionId(null);
     }
-    setSelectedSegmentId(segmentId);
+  };
+
+  const selectDimensionV44=(id:string,additive:boolean)=>{
+    if(!additive){
+      setSelectedNodeIds([]);
+      setSelectedNodeId(null);
+      setSelectedSegmentIds([]);
+      setSelectedSegmentId(null);
+      setSelectedFittingIds([]);
+      setSelectedFitting(null);
+    }
+    setSelectedDimensionId(id);
   };
 
   // V4.7.2b_HEAL_INLINE_DELETE : retirer un organe inline reconstitue le tube.
@@ -1151,62 +1407,74 @@ function IsometrieModule() {
     const nodeSet = new Set(selectedNodeIds);
     const segSet = new Set(selectedSegmentIds);
     const fitSet = new Set(selectedFittingIds);
-    if (!nodeSet.size && !segSet.size && !fitSet.size) return;
+    const hasDim = !!selectedDimensionId;
+    if (!nodeSet.size && !segSet.size && !fitSet.size && !hasDim) return;
 
-    const nextNodes = nodes.filter((n) => !nodeSet.has(n.id));
-    let nextSegments = segments
-      .filter((segment) => !segSet.has(segment.id))
-      .map((segment) => ({
-        ...segment,
-        fittings: segment.fittings.filter((fitting) => !fitSet.has(fitting.id)),
-      }));
-    let healedInlineEquipment = false;
+    if (hasDim && selectedDimensionId) {
+      setDimensions(prev => prev.filter(d => d.id !== selectedDimensionId));
+    }
 
-    // Une suppression simple d'un équipement à deux ports est l'inverse exact
-    // de son insertion : deux tronçons deviennent un seul tronçon.
-    if (nodeSet.size === 1) {
-      const nodeId = [...nodeSet][0];
-      const node = nodes.find((item) => item.id === nodeId);
-      const incident = nextSegments.filter(
-        (segment) => segment.fromNodeId === nodeId || segment.toNodeId === nodeId,
-      );
-      if (node?.equipmentType && incident.length === 2) {
-        const incoming = incident.find((segment) => segment.toNodeId === nodeId);
-        const outgoing = incident.find((segment) => segment.fromNodeId === nodeId);
-        const first = incoming || incident[0];
-        const second = outgoing || incident.find((segment) => segment.id !== first.id)!;
-        const firstExternal =
-          first.toNodeId === nodeId
-            ? { nodeId: first.fromNodeId, portId: first.fromPortId }
-            : { nodeId: first.toNodeId, portId: first.toPortId };
-        const secondExternal =
-          second.fromNodeId === nodeId
-            ? { nodeId: second.toNodeId, portId: second.toPortId }
-            : { nodeId: second.fromNodeId, portId: second.fromPortId };
-        const compatible =
-          firstExternal.nodeId !== secondExternal.nodeId &&
-          first.dn === second.dn &&
-          (first.lineId || DEFAULT_LINE_ID) === (second.lineId || DEFAULT_LINE_ID);
-        nextSegments = nextSegments.filter(
-          (segment) => !incident.some((item) => item.id === segment.id),
+    if (nodeSet.size || segSet.size || fitSet.size) {
+      const nextNodes = nodes.filter((n) => !nodeSet.has(n.id));
+      let nextSegments = segments
+        .filter((segment) => !segSet.has(segment.id))
+        .map((segment) => ({
+          ...segment,
+          fittings: segment.fittings.filter((fitting) => !fitSet.has(fitting.id)),
+        }));
+      let healedInlineEquipment = false;
+
+      // Une suppression simple d'un équipement à deux ports est l'inverse exact
+      // de son insertion : deux tronçons deviennent un seul tronçon.
+      if (nodeSet.size === 1) {
+        const nodeId = [...nodeSet][0];
+        const node = nodes.find((item) => item.id === nodeId);
+        const incident = nextSegments.filter(
+          (segment) => segment.fromNodeId === nodeId || segment.toNodeId === nodeId,
         );
-        if (compatible) {
-          const mergedSeed: IsoSegment = {
-            ...first,
-            id: uid("seg"),
-            fromNodeId: firstExternal.nodeId,
-            fromPortId: firstExternal.portId,
-            toNodeId: secondExternal.nodeId,
-            toPortId: secondExternal.portId,
-            lineId: first.lineId || second.lineId || DEFAULT_LINE_ID,
-            fittings: [],
-          };
-          const merged = {
-            ...mergedSeed,
-            length: Number(segmentGeomLength(mergedSeed, nextNodes).toFixed(3)),
-          };
-          nextSegments.push(merged);
-          healedInlineEquipment = true;
+        if (node?.equipmentType && incident.length === 2) {
+          const incoming = incident.find((segment) => segment.toNodeId === nodeId);
+          const outgoing = incident.find((segment) => segment.fromNodeId === nodeId);
+          const first = incoming || incident[0];
+          const second = outgoing || incident.find((segment) => segment.id !== first.id)!;
+          const firstExternal =
+            first.toNodeId === nodeId
+              ? { nodeId: first.fromNodeId, portId: first.fromPortId }
+              : { nodeId: first.toNodeId, portId: first.toPortId };
+          const secondExternal =
+            second.fromNodeId === nodeId
+              ? { nodeId: second.toNodeId, portId: second.toPortId }
+              : { nodeId: second.fromNodeId, portId: second.fromPortId };
+          const compatible =
+            firstExternal.nodeId !== secondExternal.nodeId &&
+            first.dn === second.dn &&
+            (first.lineId || DEFAULT_LINE_ID) === (second.lineId || DEFAULT_LINE_ID);
+          nextSegments = nextSegments.filter(
+            (segment) => !incident.some((item) => item.id === segment.id),
+          );
+          if (compatible) {
+            const mergedSeed: IsoSegment = {
+              ...first,
+              id: uid("seg"),
+              fromNodeId: firstExternal.nodeId,
+              fromPortId: firstExternal.portId,
+              toNodeId: secondExternal.nodeId,
+              toPortId: secondExternal.portId,
+              lineId: first.lineId || second.lineId || DEFAULT_LINE_ID,
+              fittings: [],
+            };
+            const merged = {
+              ...mergedSeed,
+              length: Number(segmentGeomLength(mergedSeed, nextNodes).toFixed(3)),
+            };
+            nextSegments.push(merged);
+            healedInlineEquipment = true;
+          }
+        } else {
+          nextSegments = nextSegments.filter(
+            (segment) =>
+              !nodeSet.has(segment.fromNodeId) && !nodeSet.has(segment.toNodeId),
+          );
         }
       } else {
         nextSegments = nextSegments.filter(
@@ -1214,20 +1482,184 @@ function IsometrieModule() {
             !nodeSet.has(segment.fromNodeId) && !nodeSet.has(segment.toNodeId),
         );
       }
-    } else {
-      nextSegments = nextSegments.filter(
-        (segment) =>
-          !nodeSet.has(segment.fromNodeId) && !nodeSet.has(segment.toNodeId),
-      );
-    }
 
-    commitGraph(nextNodes, recalcSegmentLengths(nextNodes, nextSegments));
+    // PATCH 004 : aucune cotation ne doit survivre a son noeud/port support.
+    const survivingNodeIds = new Set(nextNodes.map((n) => n.id));
+    const nextDimensions = dimensions.filter(
+      (dimension) =>
+        survivingNodeIds.has(dimension.a.nodeId) &&
+        survivingNodeIds.has(dimension.b.nodeId),
+    );
+    const orphanDimensionCount = dimensions.length - nextDimensions.length;
+    commitGraph(
+      nextNodes,
+      recalcSegmentLengths(nextNodes, nextSegments),
+      lines,
+      nextDimensions,
+    );
+    if (orphanDimensionCount > 0) {
+      setStatusMessage(`Sélection supprimée · ${orphanDimensionCount} cotation(s) orpheline(s) retirée(s)`);
+    }
+    setCtxMenu(null);
     setStatusMessage(
       healedInlineEquipment
         ? "Équipement supprimé · tube reconstitué"
         : "Sélection supprimée",
     );
+    } else if (hasDim) {
+      setStatusMessage("Cotation supprimée");
+    }
     clearSelection();
+  };
+
+  // ================= PATCH 004 : presse-papiers et edition =================
+
+  // Sous-graphe coherent : les noeuds selectionnes et uniquement les tubes
+  // dont LES DEUX extremites sont selectionnees (jamais de tube pendant).
+  const selectionSubGraph=()=>{
+    const ids=new Set(selectedNodeIds);
+    const pickedNodes=nodes.filter(n=>ids.has(n.id));
+    const pickedSegments=segments.filter(s=>ids.has(s.fromNodeId)&&ids.has(s.toNodeId));
+    return {nodes:pickedNodes,segments:pickedSegments};
+  };
+
+  // Re-identification complete : nouveaux IDs noeuds, ports, tubes et organes.
+  const cloneSubGraphWithNewIds=(source:{nodes:IsoNode[];segments:IsoSegment[]},offset:{x:number;y:number;z:number})=>{
+    const nodeIdMap=new Map<string,string>();
+    const portIdMap=new Map<string,string>();
+    const clonedNodes:IsoNode[]=source.nodes.map(n=>{
+      const newId=uid("node");
+      nodeIdMap.set(n.id,newId);
+      const ports=(n.ports||[]).map(p=>{
+        const newPortId=uid("port");
+        portIdMap.set(p.id,newPortId);
+        return {...p,id:newPortId};
+      });
+      return {...n,id:newId,ports:ports.length?ports:n.ports};
+    });
+    const clonedSegments:IsoSegment[]=source.segments.map(s=>({
+      ...s,
+      id:uid("seg"),
+      fromNodeId:nodeIdMap.get(s.fromNodeId)||s.fromNodeId,
+      toNodeId:nodeIdMap.get(s.toNodeId)||s.toNodeId,
+      fromPortId:s.fromPortId?(portIdMap.get(s.fromPortId)||undefined):undefined,
+      toPortId:s.toPortId?(portIdMap.get(s.toPortId)||undefined):undefined,
+      fittings:s.fittings.map(f=>({...f,id:uid("fit")})),
+    }));
+    // Aucun offset arbitraire : reutilisation de snapIsoV4 (L619) et du pas actif.
+    const movedNodes=clonedNodes.map(n=>({
+      ...n,
+      x:snapIsoV4(n.x+offset.x,isoSnapStep),
+      y:snapIsoV4(n.y+offset.y,isoSnapStep),
+      z:Number((n.z+offset.z).toFixed(3)),
+    }));
+    return {nodes:movedNodes,segments:clonedSegments,nodeIdMap};
+  };
+
+  const copySelection=()=>{
+    const sub=selectionSubGraph();
+    if(!sub.nodes.length){setStatusMessage("Rien à copier");return;}
+    clipboardRef.current={nodes:sub.nodes.map(n=>({...n})),segments:sub.segments.map(s=>({...s,fittings:s.fittings.map(f=>({...f}))}))};
+    setStatusMessage(`${sub.nodes.length} élément(s) copié(s)`);
+    setCtxMenu(null);
+  };
+
+  const cutSelection=()=>{
+    const sub=selectionSubGraph();
+    if(!sub.nodes.length){setStatusMessage("Rien à couper");return;}
+    clipboardRef.current={nodes:sub.nodes.map(n=>({...n})),segments:sub.segments.map(s=>({...s,fittings:s.fittings.map(f=>({...f}))}))};
+    deleteSelection();
+    setStatusMessage(`${sub.nodes.length} élément(s) coupé(s)`);
+  };
+
+  const pasteClipboard=()=>{
+    const buffer=clipboardRef.current;
+    if(!buffer||!buffer.nodes.length){setStatusMessage("Presse-papiers vide");return;}
+    const step=Math.max(isoSnapStep,.25);
+    const cloned=cloneSubGraphWithNewIds(buffer,{x:step,y:step,z:0});
+    // Ports et lineId canonises par la fonction metier existante normalizedGraphPorts.
+    const normalized=normalizedGraphPorts([...nodes,...cloned.nodes],[...segments,...cloned.segments]);
+    const nextNodes=normalized.nodes;
+    const nextSegments=normalized.segments;
+    commitGraph(nextNodes,recalcSegmentLengths(nextNodes,nextSegments));
+    setSelectedNodeIds(cloned.nodes.map(n=>n.id));
+    setSelectedSegmentIds([]);
+    setSelectedFittingIds([]);
+    setSelectedNodeId(cloned.nodes[0]?.id||null);
+    setStatusMessage(`${cloned.nodes.length} élément(s) collé(s) · nouveaux IDs`);
+    setCtxMenu(null);
+  };
+
+  const duplicateSelection=()=>{
+    const sub=selectionSubGraph();
+    if(!sub.nodes.length){setStatusMessage("Rien à dupliquer");return;}
+    const step=Math.max(isoSnapStep,.25);
+    const cloned=cloneSubGraphWithNewIds(sub,{x:step,y:step,z:0});
+    const normalized=normalizedGraphPorts([...nodes,...cloned.nodes],[...segments,...cloned.segments]);
+    const nextNodes=normalized.nodes;
+    const nextSegments=normalized.segments;
+    commitGraph(nextNodes,recalcSegmentLengths(nextNodes,nextSegments));
+    setSelectedNodeIds(cloned.nodes.map(n=>n.id));
+    setSelectedSegmentIds([]);
+    setSelectedFittingIds([]);
+    setSelectedNodeId(cloned.nodes[0]?.id||null);
+    setStatusMessage(`${cloned.nodes.length} élément(s) dupliqué(s) · nouveaux IDs`);
+    setCtxMenu(null);
+  };
+
+  // Deplacement clavier : une touche = une operation logique = un undo.
+  const moveSelection=(dx:number,dy:number,dz:number)=>{
+    if(!selectedNodeIds.length)return;
+    const ids=new Set(selectedNodeIds);
+    // snapIsoV4 : le deplacement clavier reste sur la grille metier active.
+    const nextNodes=nodes.map(n=>ids.has(n.id)
+      ?{...n,x:snapIsoV4(n.x+dx,isoSnapStep),y:snapIsoV4(n.y+dy,isoSnapStep),z:Number((n.z+dz).toFixed(3))}
+      :n);
+    commitGraph(nextNodes,recalcSegmentLengths(nextNodes,segments));
+    setStatusMessage(`Déplacement ${dz?"Z":"XY"} de ${selectedNodeIds.length} élément(s)`);
+  };
+
+  // Ecriture protegee d'une coordonnee : jamais NaN, jamais de perte de topologie.
+  const setNodeCoordinate=(id:string,axis:"x"|"y"|"z",raw:string)=>{
+    const value=Number(String(raw).replace(",","."));
+    if(!Number.isFinite(value)){setStatusMessage("Valeur refusée : coordonnée non numérique");return;}
+    const nextNodes=nodes.map(n=>n.id===id?{...n,[axis]:Number(value.toFixed(3))}:n);
+    commitGraph(nextNodes,recalcSegmentLengths(nextNodes,segments));
+  };
+
+  // Champs descriptifs : aucun impact sur le graphe (ports/tubes intacts).
+  const setNodeMeta=(id:string,patch:Partial<IsoNode>)=>{
+    const safe={...patch};
+    delete (safe as any).id;
+    delete (safe as any).ports;
+    delete (safe as any).x;
+    delete (safe as any).y;
+    delete (safe as any).z;
+    commitGraph(nodes.map(n=>n.id===id?{...n,...safe}:n),segments);
+  };
+
+  // Menu contextuel : la cible sous le curseur devient la selection courante.
+  const openIsoContextMenu=(e:React.MouseEvent<SVGSVGElement>)=>{
+    e.preventDefault();
+    const target=e.target as Element;
+    const fitEl=target.closest("[data-iso-fitting='true']");
+    const nodeEl=target.closest("[data-iso-node='true']");
+    const segEl=target.closest("[data-iso-segment='true']");
+    const additive=e.shiftKey;
+    if(fitEl){
+      const sid=fitEl.getAttribute("data-segment-id")||"";
+      const fid=fitEl.getAttribute("data-fitting-id")||"";
+      if(!selectedFittingIds.includes(fid))selectFittingV44(sid,fid,additive);
+    }else if(nodeEl){
+      const id=nodeEl.getAttribute("data-node-id")||"";
+      if(!selectedNodeIds.includes(id))selectNodeV44(id,additive);
+    }else if(segEl){
+      const id=segEl.getAttribute("data-segment-id")||"";
+      if(!selectedSegmentIds.includes(id))selectSegmentV44(id,additive);
+    }else{
+      clearSelection();
+    }
+    setCtxMenu({x:e.clientX,y:e.clientY});
   };
 
   const setSegmentLength=(id:string,value:number)=>{
@@ -1274,13 +1706,41 @@ function IsometrieModule() {
     return()=>window.removeEventListener("keydown",onKey);
   },[selectedNodeIds,nodes,segments]);
 
-  const wheel=(e:React.WheelEvent<SVGSVGElement>)=>{
+  const wheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
-    setViewport(v=>({...v,zoom:clamp(v.zoom*(e.deltaY<0?1.12:.892857),.35,4)}));
+    e.stopPropagation();
+    const { sx, sy } = getSvgCoordinates(e.clientX, e.clientY, svgRef.current || (e.currentTarget as unknown as SVGSVGElement));
+
+    if (e.ctrlKey || e.metaKey) {
+      const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
+      setViewport((v) => {
+        const nextZoom = clamp(v.zoom * zoomFactor, 0.35, 4);
+        const factor = nextZoom / v.zoom;
+        const panX = (sx - 310) - (sx - 310 - v.panX) * factor;
+        const panY = (sy - 210) - (sy - 210 - v.panY) * factor;
+        return { zoom: Number(nextZoom.toFixed(3)), panX: Math.round(panX), panY: Math.round(panY) };
+      });
+      return;
+    }
+
+    if (e.shiftKey) {
+      const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX;
+      setViewport((v) => ({ ...v, panX: Math.round(v.panX - delta) }));
+      return;
+    }
+
+    if (Math.abs(e.deltaX) > 0 || Math.abs(e.deltaY) > 0) {
+      setViewport((v) => ({
+        ...v,
+        panX: Math.round(v.panX - e.deltaX),
+        panY: Math.round(v.panY - e.deltaY),
+      }));
+    }
   };
   const pointerDown=(e:React.PointerEvent<SVGSVGElement>)=>{
     const target=e.target as Element;
     const additive=e.ctrlKey||e.metaKey||e.shiftKey;
+    const { sx, sy } = getSvgCoordinates(e.clientX, e.clientY, svgRef.current || (e.currentTarget as unknown as SVGSVGElement));
 
     // MODE MAIN : uniquement déplacement de la feuille.
     if(interactionMode==="main"){
@@ -1289,7 +1749,7 @@ function IsometrieModule() {
       return;
     }
 
-        if (isoDrawMode === "dimension") {
+    if (isoDrawMode === "dimension") {
       const anchor = anchorFromTarget(target);
       if (anchor) {
         handleDimensionAnchorPick(anchor);
@@ -1299,14 +1759,26 @@ function IsometrieModule() {
       setStatusMessage("Cotation : cliquez un nœud ou un port");
       return;
     }
+
+    // Cotation sélectionnable
+    const dimEl=target.closest("[data-iso-dimension='true']");
+    if(dimEl){
+      const dimId=dimEl.getAttribute("data-dimension-id");
+      if(dimId){
+        selectDimensionV44(dimId,additive);
+        setRightPanelTab("dimensions");
+        e.stopPropagation();
+        return;
+      }
+    }
+
     // Port du Té avant le nœud parent.
     const portEl=target.closest("[data-iso-port='true']");
     if(portEl){
       const nodeId=portEl.getAttribute("data-port-node-id");
       const portIdx=Number(portEl.getAttribute("data-port-idx")||"1");
       if(nodeId){
-        setSelectedNodeIds([nodeId]);
-        setSelectedNodeId(nodeId);
+        selectNodeV44(nodeId,additive);
         const node=nodes.find(n=>n.id===nodeId);
         setBranchDrawing({fromNodeId:nodeId,fromPortId:portByIndex(node,portIdx)?.id,handleIndex:portIdx,currentWorldPos:screenToIsoWorld(e)});
         e.currentTarget.setPointerCapture(e.pointerId);
@@ -1331,6 +1803,15 @@ function IsometrieModule() {
     if(segmentEl){
       const id=segmentEl.getAttribute("data-segment-id")||"";
       if(id){
+        if(isoDrawMode==="coude"){
+          createElbowFromPointer(e);e.stopPropagation();return;
+        }
+        if(isoDrawMode==="te"){
+          createTeeFromPointer(e);e.stopPropagation();return;
+        }
+        if(isoDrawMode==="node"){
+          createNodeFromPointer(e);e.stopPropagation();return;
+        }
         selectSegmentV44(id,additive);
         e.stopPropagation();
         return;
@@ -1355,11 +1836,27 @@ function IsometrieModule() {
       }
     }
 
+    if(isoDrawMode==="coude"){
+      createElbowFromPointer(e);e.stopPropagation();return;
+    }
     if(isoDrawMode==="te"){
       createTeeFromPointer(e);e.stopPropagation();return;
     }
     if(isoDrawMode==="node"){
       createNodeFromPointer(e);e.stopPropagation();return;
+    }
+
+    if(interactionMode==="select" && isoDrawMode==="select"){
+      marqueeRef.current = {
+        startX: sx,
+        startY: sy,
+        additive,
+        baselineNodeIds: additive ? [...selectedNodeIds] : [],
+        baselineSegIds: additive ? [...selectedSegmentIds] : [],
+        active: false,
+      };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
     }
 
     clearSelection();
@@ -1368,9 +1865,110 @@ function IsometrieModule() {
   };
 
   const pointerMove=(e:React.PointerEvent<SVGSVGElement>)=>{
+    const { sx, sy } = getSvgCoordinates(e.clientX, e.clientY, svgRef.current || (e.currentTarget as unknown as SVGSVGElement));
+
+    if(marqueeRef.current){
+      const m = marqueeRef.current;
+      const dist = Math.hypot(sx - m.startX, sy - m.startY);
+      if (!m.active && dist < 5) {
+        return;
+      }
+      m.active = true;
+      setMarquee({ startX: m.startX, startY: m.startY, currentX: sx, currentY: sy });
+
+      const minX = Math.min(m.startX, sx), maxX = Math.max(m.startX, sx);
+      const minY = Math.min(m.startY, sy), maxY = Math.max(m.startY, sy);
+      const isCrossing = sx < m.startX;
+
+      const boxedNodeIds = nodes.filter(n => {
+        const p = isoProjectV4(n.x, n.y, n.z || 0, viewport.zoom, viewport.panX, viewport.panY);
+        return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
+      }).map(n => n.id);
+
+      const boxedSegIds = segments.filter(s => {
+        const a = nodes.find(n => n.id === s.fromNodeId);
+        const b = nodes.find(n => n.id === s.toNodeId);
+        if (!a || !b) return false;
+        const ep = segmentEndpoints(s, nodes);
+        const pa = ep ? isoProjectV4(ep.from.x, ep.from.y, ep.from.z, viewport.zoom, viewport.panX, viewport.panY) : isoProjectV4(a.x, a.y, a.z || 0, viewport.zoom, viewport.panX, viewport.panY);
+        const pb = ep ? isoProjectV4(ep.to.x, ep.to.y, ep.to.z, viewport.zoom, viewport.panX, viewport.panY) : isoProjectV4(b.x, b.y, b.z || 0, viewport.zoom, viewport.panX, viewport.panY);
+        if (isCrossing) {
+          return lineSegmentIntersectsBox(pa, pb, minX, minY, maxX, maxY);
+        } else {
+          return pa.x >= minX && pa.x <= maxX && pa.y >= minY && pa.y <= maxY &&
+                 pb.x >= minX && pb.x <= maxX && pb.y >= minY && pb.y <= maxY;
+        }
+      }).map(s => s.id);
+
+      const finalNodeIds = m.additive ? Array.from(new Set([...m.baselineNodeIds, ...boxedNodeIds])) : boxedNodeIds;
+      const finalSegIds = m.additive ? Array.from(new Set([...m.baselineSegIds, ...boxedSegIds])) : boxedSegIds;
+
+      setSelectedNodeIds(finalNodeIds);
+      setSelectedNodeId(finalNodeIds.length ? finalNodeIds[finalNodeIds.length - 1] : null);
+      setSelectedSegmentIds(finalSegIds);
+      setSelectedSegmentId(finalSegIds.length ? finalSegIds[finalSegIds.length - 1] : null);
+      setSelectedFittingIds([]);
+      setSelectedFitting(null);
+      setSelectedDimensionId(null);
+      return;
+    }
+
+    // Detection du snap le plus proche (Port, Endpoint, Midpoint, Grid)
+    let detectedSnap: { kind: "PORT"|"ENDPOINT"|"MIDPOINT"|"AXIS"|"GRID"; label: string; worldPos: { x: number; y: number; z: number }; screenPos: { x: number; y: number } } | null = null;
+    if (snapEnabled) {
+      if (snapPorts) {
+        for (const node of nodes) {
+          if (node.ports) {
+            for (const port of node.ports) {
+              const wp = portWorldPosition(node, port.id);
+              const sp = isoProjectV4(wp.x, wp.y, wp.z, viewport.zoom, viewport.panX, viewport.panY);
+              if (Math.hypot(sp.x - sx, sp.y - sy) < 14) {
+                detectedSnap = { kind: "PORT", label: `PORT ${node.name} [${port.role || port.index}]`, worldPos: wp, screenPos: sp };
+                break;
+              }
+            }
+          }
+          if (detectedSnap) break;
+        }
+      }
+      if (!detectedSnap && snapEndpoints) {
+        for (const node of nodes) {
+          const np = isoProjectV4(node.x, node.y, node.z, viewport.zoom, viewport.panX, viewport.panY);
+          if (Math.hypot(np.x - sx, np.y - sy) < 14) {
+            detectedSnap = { kind: "ENDPOINT", label: `POINT ${node.name} (Z=${node.z || 0}m)`, worldPos: { x: node.x, y: node.y, z: node.z || 0 }, screenPos: np };
+            break;
+          }
+        }
+      }
+      if (!detectedSnap && snapMidpoints) {
+        for (const seg of segments) {
+          const ep = segmentEndpoints(seg, nodes);
+          if (ep) {
+            const mx = (ep.from.x + ep.to.x) / 2, my = (ep.from.y + ep.to.y) / 2, mz = (ep.from.z + ep.to.z) / 2;
+            const sp = isoProjectV4(mx, my, mz, viewport.zoom, viewport.panX, viewport.panY);
+            if (Math.hypot(sp.x - sx, sp.y - sy) < 12) {
+              detectedSnap = { kind: "MIDPOINT", label: `MILIEU ${seg.sourceName || "Tube"}`, worldPos: { x: mx, y: my, z: mz }, screenPos: sp };
+              break;
+            }
+          }
+        }
+      }
+      if (!detectedSnap && snapGrid && isoSnapStep > 0) {
+        const w = isoUnprojectV4(sx, sy, viewport.zoom, viewport.panX, viewport.panY, nodeZ || 0);
+        const gx = snapIsoV4(w.x, isoSnapStep);
+        const gy = snapIsoV4(w.y, isoSnapStep);
+        const gp = isoProjectV4(gx, gy, nodeZ || 0, viewport.zoom, viewport.panX, viewport.panY);
+        if (Math.hypot(gp.x - sx, gp.y - sy) < 8) {
+          detectedSnap = { kind: "GRID", label: `GRILLE (${gx.toFixed(2)}, ${gy.toFixed(2)})`, worldPos: { x: gx, y: gy, z: nodeZ || 0 }, screenPos: gp };
+        }
+      }
+    }
+    setActiveSnap(detectedSnap);
+
     if(branchDrawing){
       const w=screenToIsoWorld(e);
-      setBranchDrawing(prev=>prev?{...prev,currentWorldPos:{x:snapIsoV4(w.x,isoSnapStep),y:snapIsoV4(w.y,isoSnapStep),z:nodeZ||0}}:null);
+      const targetPos = detectedSnap ? detectedSnap.worldPos : { x: snapIsoV4(w.x, isoSnapStep), y: snapIsoV4(w.y, isoSnapStep), z: nodeZ || 0 };
+      setBranchDrawing(prev=>prev?{...prev,currentWorldPos:targetPos}:null);
       return;
     }
     if(dragNodeId && interactionMode==="select"){
@@ -1384,19 +1982,30 @@ function IsometrieModule() {
           return {...n,x:snapIsoV4(p.x+dx,isoSnapStep),y:snapIsoV4(p.y+dy,isoSnapStep),z:p.z+dz};
         });
         if(JSON.stringify(nextNodes)!==JSON.stringify(nodes)){
+          // PATCH 004 : l'instantane est pris UNE fois au debut du geste,
+          // puis on ecrit en direct (setters bruts) pour ne pas empiler
+          // un undo par mouvement de souris.
+          if(!gestureDirtyRef.current){
+            pushHistory();
+            redoRef.current=[];
+            gestureDirtyRef.current=true;
+          }
           dragChangedRef.current=true;
-          setNodes(nextNodes);
-          setSegments(recalcSegmentLengths(nextNodes,segments));
+          setNodesRaw(nextNodes);
+          setSegmentsRaw(recalcSegmentLengths(nextNodes,segments));
         }
       }
       return;
     }
     if(dragFittingInfo && interactionMode==="select"){
-      const r=e.currentTarget.getBoundingClientRect();
-      const sx=(e.clientX-r.left)*(620/r.width),sy=(e.clientY-r.top)*(400/r.height);
       const hit=findSegmentAtScreen(sx,sy);
       if(hit&&hit.id===dragFittingInfo.segmentId){
-        setSegments(prev=>prev.map(s=>s.id===hit.id?{...s,fittings:s.fittings.map(f=>f.id===dragFittingInfo.fittingId?{...f,localPosition:hit.t}:f)}:s));
+        if(!gestureDirtyRef.current){
+          pushHistory();
+          redoRef.current=[];
+          gestureDirtyRef.current=true;
+        }
+        setSegmentsRaw(prev=>prev.map(s=>s.id===hit.id?{...s,fittings:s.fittings.map(f=>f.id===dragFittingInfo.fittingId?{...f,localPosition:hit.t}:f)}:s));
       }
       return;
     }
@@ -1406,6 +2015,26 @@ function IsometrieModule() {
   };
 
   const pointerUp=(e?:React.PointerEvent<SVGSVGElement>)=>{
+    if(marqueeRef.current){
+      const m = marqueeRef.current;
+      if (m.active) {
+        const total = selectedNodeIds.length + selectedSegmentIds.length;
+        if (total > 0) {
+          setStatusMessage(`Sélection multiple : ${selectedNodeIds.length} nœud(s), ${selectedSegmentIds.length} tronçon(s)`);
+        } else {
+          setStatusMessage("Zone vide sélectionnée");
+        }
+      } else {
+        if (!m.additive) {
+          clearSelection();
+        }
+      }
+      marqueeRef.current = null;
+      setMarquee(null);
+    }
+    if(marquee){
+      setMarquee(null);
+    }
     if(branchDrawing&&e){
       const w=screenToIsoWorld(e);
       const target=e.target as Element;
@@ -1440,6 +2069,8 @@ function IsometrieModule() {
     drag.current=null;
     dragSelectionRef.current=null;
     dragChangedRef.current=false;
+    // PATCH 004 : le prochain geste ouvrira une nouvelle entree d'historique.
+    gestureDirtyRef.current=false;
     setDragNodeId(null);
     setDragFittingInfo(null);
     setBranchDrawing(null);
@@ -1452,17 +2083,47 @@ function IsometrieModule() {
     setNodeName("Nouveau point");
   };
   const removeNode=(id:string)=>{
-    setNodes(v=>v.filter(n=>n.id!==id));
-    setSegments(v=>v.filter(s=>s.fromNodeId!==id&&s.toNodeId!==id));
+    // PATCH 004 : suppression unitaire alignee sur deleteSelection.
+    const nextNodes=nodes.filter(n=>n.id!==id);
+    const nextSegments=segments.filter(s=>s.fromNodeId!==id&&s.toNodeId!==id);
+    const nextDimensions=dimensions.filter(d=>d.a.nodeId!==id&&d.b.nodeId!==id);
+    commitGraph(nextNodes,recalcSegmentLengths(nextNodes,nextSegments),lines,nextDimensions);
     if(selectedNodeId===id)setSelectedNodeId(null);
+    setSelectedNodeIds(prev=>prev.filter(x=>x!==id));
+    setCtxMenu(null);
   };
   const renameNode=(id:string,name:string)=>
     setNodes(v=>v.map(n=>n.id===id?{...n,name}:n));
 
   const rotateSelectedEquipment=(delta:number)=>{
-    if(!selectedNodeIds.length)return;
-    setNodes(v=>v.map(n=>selectedNodeIds.includes(n.id)&&n.equipmentType?{...n,rotation:((((n.rotation||0)+delta)%360)+360)%360}:n));
-    setStatusMessage(`Rotation équipement ${delta>0?"+":""}${delta}°`);
+    if (selectedFitting && selectedSegmentId) {
+      setSegments(v => v.map(s => s.id === selectedSegmentId ? {
+        ...s,
+        fittings: s.fittings.map(f => f.id === selectedFitting.fittingId ? {
+          ...f,
+          orientation: ((((f.orientation || 0) + delta) % 360) + 360) % 360
+        } : f)
+      } : s));
+      setStatusMessage(`Rotation raccord ${delta > 0 ? "+" : ""}${delta}°`);
+      return;
+    }
+    const targetNodeIds = selectedNodeIds.length ? selectedNodeIds : (selectedNodeId ? [selectedNodeId] : []);
+    if (!targetNodeIds.length) {
+      setStatusMessage("Sélectionnez un équipement ou un nœud pour le pivoter (R)");
+      return;
+    }
+    const nextNodes = nodes.map(n => {
+      if (!targetNodeIds.includes(n.id)) return n;
+      if (n.equipmentType) {
+        return { ...n, rotation: ((((n.rotation || 0) + delta) % 360) + 360) % 360 };
+      }
+      if (n.branchAngle !== undefined || n.type === "tee" || n.type === "piquage") {
+        return { ...n, branchAngle: ((((n.branchAngle || 0) + delta) % 360) + 360) % 360, rotation: ((((n.rotation || 0) + delta) % 360) + 360) % 360 };
+      }
+      return { ...n, rotation: ((((n.rotation || 0) + delta) % 360) + 360) % 360 };
+    });
+    commitGraph(nextNodes, recalcSegmentLengths(nextNodes, segments));
+    setStatusMessage(`Rotation ${delta > 0 ? "+" : ""}${delta}° (R)`);
   };
   const flipSelectedEquipment=()=>{
     const selected=nodes.filter(n=>selectedNodeIds.includes(n.id)&&n.equipmentType);
@@ -1556,9 +2217,9 @@ function IsometrieModule() {
 
   const iso=(n:IsoNode)=>isoProjectV4(n.x,n.y,n.z,viewport.zoom,viewport.panX,viewport.panY);
 
-  const screenToIsoWorld=(e:React.PointerEvent<SVGSVGElement>)=>{
-    const r=e.currentTarget.getBoundingClientRect();
-    return isoUnprojectV4((e.clientX-r.left)*(620/r.width),(e.clientY-r.top)*(400/r.height),viewport.zoom,viewport.panX,viewport.panY);
+  const screenToIsoWorld=(e:React.PointerEvent<SVGSVGElement>, targetZ:number = nodeZ || 0)=>{
+    const { sx, sy } = getSvgCoordinates(e.clientX, e.clientY, svgRef.current || (e.currentTarget as unknown as SVGSVGElement));
+    return isoUnprojectV4(sx, sy, viewport.zoom, viewport.panX, viewport.panY, targetZ);
   };
 
   
@@ -1793,19 +2454,74 @@ function IsometrieModule() {
   };
 
   const createTeeFromPointer=(e:React.PointerEvent<SVGSVGElement>)=>{
-    const w=screenToIsoWorld(e);
-    const n=makeNode(`Té - N${nodes.length+1}`,snapIsoV4(w.x,isoSnapStep),snapIsoV4(w.y,isoSnapStep),nodeZ||0,"tee");
-    setNodes(prev=>[...prev,n]);
-    setSelectedNodeId(n.id);
-    return n.id;
+    const { sx, sy } = getSvgCoordinates(e.clientX, e.clientY, svgRef.current || (e.currentTarget as unknown as SVGSVGElement));
+    const hit = findSegmentAtScreen(sx, sy);
+    if (hit) {
+      const seg = segments.find(s => s.id === hit.id);
+      const id = insertEquipmentNode(hit.id, "te_egal", hit.t, "Té DN" + (seg?.dn || newDN));
+      setStatusMessage("Té inséré et connecté sur le tronçon");
+      return id;
+    }
+    const w = screenToIsoWorld(e, nodeZ || 0);
+    const node = makeEquipmentNode("te_egal", `Té N${nodes.length + 1}`, snapIsoV4(w.x, isoSnapStep), snapIsoV4(w.y, isoSnapStep), nodeZ || 0, newDN, 0);
+    setNodes(prev => [...prev, node]);
+    setSelectedNodeId(node.id);
+    setSelectedNodeIds([node.id]);
+    setStatusMessage("Té créé (3 ports) — tirer depuis le port 3 (dérivation) pour créer la branche");
+    return node.id;
   };
 
   const createNodeFromPointer=(e:React.PointerEvent<SVGSVGElement>)=>{
-    const w=screenToIsoWorld(e);
-    const n=makeNode(`N${nodes.length+1}`,snapIsoV4(w.x,isoSnapStep),snapIsoV4(w.y,isoSnapStep),0,"normal");
-    setNodes(prev=>[...prev,n]);
+    const { sx, sy } = getSvgCoordinates(e.clientX, e.clientY, svgRef.current || (e.currentTarget as unknown as SVGSVGElement));
+    const hit = findSegmentAtScreen(sx, sy);
+    if (hit) {
+      const s = segments.find(x => x.id === hit.id);
+      if (s) {
+        const a = nodes.find(n => n.id === s.fromNodeId);
+        const b = nodes.find(n => n.id === s.toNodeId);
+        if (a && b) {
+          const t = clamp(hit.t, 0, 1);
+          const p = pointOnSegment(a, b, t);
+          const newNode = makeNode(`N${nodes.length + 1}`, Number(p.x.toFixed(3)), Number(p.y.toFixed(3)), Number(p.z.toFixed(3)), "normal");
+          const l1 = Math.hypot(p.x - a.x, p.y - a.y, p.z - a.z);
+          const l2 = Math.hypot(b.x - p.x, b.y - p.y, b.z - p.z);
+          const s1 = { ...cloneSegmentBetween(s, a.id, newNode.id, l1, s.type), fromPortId: s.fromPortId, toPortId: availablePortId(newNode, [], 0) };
+          const s2 = { ...cloneSegmentBetween(s, newNode.id, b.id, l2, s.type), fromPortId: availablePortId(newNode, [], 1), toPortId: s.toPortId };
+          const nextNodes = [...nodes, newNode];
+          const nextSegments = recalcSegmentLengths(nextNodes, [...segments.filter(x => x.id !== s.id), s1, s2]);
+          commitGraph(nextNodes, nextSegments);
+          setSelectedNodeId(newNode.id);
+          setSelectedNodeIds([newNode.id]);
+          setStatusMessage("Point inséré sur le tronçon existant");
+          return newNode.id;
+        }
+      }
+    }
+    const w = screenToIsoWorld(e, nodeZ || 0);
+    const n = makeNode(`N${nodes.length + 1}`, snapIsoV4(w.x, isoSnapStep), snapIsoV4(w.y, isoSnapStep), nodeZ || 0, "normal");
+    setNodes(prev => [...prev, n]);
     setSelectedNodeId(n.id);
+    setSelectedNodeIds([n.id]);
+    setStatusMessage(`Nœud N${nodes.length + 1} créé à (${n.x.toFixed(2)}, ${n.y.toFixed(2)}, Z=${n.z.toFixed(2)}m)`);
     return n.id;
+  };
+
+  const createElbowFromPointer=(e:React.PointerEvent<SVGSVGElement>)=>{
+    const { sx, sy } = getSvgCoordinates(e.clientX, e.clientY, svgRef.current || (e.currentTarget as unknown as SVGSVGElement));
+    const hit = findSegmentAtScreen(sx, sy);
+    if (hit) {
+      const seg = segments.find(s => s.id === hit.id);
+      const id = insertEquipmentNode(hit.id, "coude_90", hit.t, "Coude 90° DN" + (seg?.dn || newDN));
+      setStatusMessage("Coude 90° inséré sur le tronçon");
+      return id;
+    }
+    const w = screenToIsoWorld(e, nodeZ || 0);
+    const node = makeEquipmentNode("coude_90", `Coude 90° N${nodes.length + 1}`, snapIsoV4(w.x, isoSnapStep), snapIsoV4(w.y, isoSnapStep), nodeZ || 0, newDN, 0);
+    setNodes(prev => [...prev, node]);
+    setSelectedNodeId(node.id);
+    setSelectedNodeIds([node.id]);
+    setStatusMessage("Coude 90° placé — raccorder ses ports");
+    return node.id;
   };
 
   const createSegmentFromNodes=(fromId:string,toId:string,fromPortId?:string,toPortId?:string)=>{
@@ -2227,8 +2943,7 @@ function IsometrieModule() {
     const raw=e.dataTransfer.getData("application/x-iso-equipment")||e.dataTransfer.getData("text/plain");
     if(!FITTING_TYPES.includes(raw as IsoFittingType))return;
     const type=raw as IsoFittingType;
-    const rect=e.currentTarget.getBoundingClientRect();
-    const sx=(e.clientX-rect.left)*(620/rect.width),sy=(e.clientY-rect.top)*(400/rect.height);
+    const { sx, sy } = getSvgCoordinates(e.clientX, e.clientY, svgRef.current || (e.currentTarget as unknown as SVGSVGElement));
     const hit=findSegmentAtScreen(sx,sy);
     const dropKey=`${type}:${hit?.id||"canvas"}:${Math.round((hit?.t||0)*100)}`;
     const previousDrop=lastEquipmentDropRef.current;
@@ -2238,7 +2953,7 @@ function IsometrieModule() {
       insertEquipmentNode(hit.id,type,hit.t,FITTING_LABELS[type]);
       setStatusMessage(`${FITTING_LABELS[type]} intégré au réseau`);
     }else{
-      const world=isoUnprojectV4(sx,sy,viewport.zoom,viewport.panX,viewport.panY);
+      const world=isoUnprojectV4(sx,sy,viewport.zoom,viewport.panX,viewport.panY, nodeZ || 0);
       const node=makeEquipmentNode(type,FITTING_LABELS[type],snapIsoV4(world.x,isoSnapStep),snapIsoV4(world.y,isoSnapStep),nodeZ||0,newDN,0);
       setNodes(prev=>[...prev,node]);
       setSelectedNodeId(node.id);setSelectedNodeIds([node.id]);
@@ -2255,8 +2970,10 @@ function IsometrieModule() {
     {
       title: "Fichier",
       items: [
+        { label: "⌂ Retour Accueil", hint: "Home", run: () => window.dispatchEvent(new CustomEvent("pdi:navigate", { detail: "home" })) },
         { label: "Exemple poste", hint: "charger", run: loadPresetPoste },
         { label: "Exemple gare racleur", hint: "charger", run: loadPresetGare },
+        { label: "📋 Tableau Propriétés & BOM", hint: "F2", run: () => { setPropertiesModalOpen(true); setPropertiesActiveTab("all"); } },
         { label: "Ouvrir JSON", hint: "import", run: () => importProjectRef.current?.click() },
         { label: "Sauver JSON", hint: "export", run: exportProjectJson },
       ],
@@ -2265,6 +2982,12 @@ function IsometrieModule() {
       title: "Édition",
       items: [
         { label: "Annuler", hint: "Ctrl+Z", run: undoGraph },
+        { label: "Rétablir", hint: "Ctrl+Y", run: redoGraph },
+        { label: "Copier", hint: "Ctrl+C", run: copySelection, disabled: !selectedCount },
+        { label: "Couper", hint: "Ctrl+X", run: cutSelection, disabled: !selectedCount },
+        { label: "Coller", hint: "Ctrl+V", run: () => pasteClipboard() },
+        { label: "Dupliquer", hint: "Ctrl+D", run: duplicateSelection, disabled: !selectedCount },
+        { label: "Tout sélectionner", hint: "Ctrl+A", run: () => { setSelectedNodeIds(nodes.map(n=>n.id)); setSelectedSegmentIds(segments.map(s=>s.id)); } },
         { label: "Supprimer sélection", hint: "Suppr", run: deleteSelection, disabled: !selectedCount },
         { label: "Désélectionner", hint: "Esc", run: clearSelection },
       ],
@@ -2274,8 +2997,8 @@ function IsometrieModule() {
       items: [
         { label: "Zoom +", hint: "+", run: zoomIn },
         { label: "Zoom -", hint: "-", run: zoomOut },
-        { label: "Ajuster/recentrer", hint: "Fit", run: resetView },
-        { label: showGrid ? "Masquer grille" : "Afficher grille", hint: "#", run: () => setShowGrid((v) => !v) },
+        { label: "Ajuster/recentrer", hint: "Fit / 0", run: resetView },
+        { label: showGrid ? "Masquer grille" : "Afficher grille", hint: "G", run: () => setShowGrid((v) => !v) },
         { label: showPipeLabels ? "Masquer pipelines" : "Afficher pipelines", run: () => setShowPipeLabels((v) => !v) },
         { label: showWelds ? "Masquer soudures" : "Afficher soudures", run: () => setShowWelds((v) => !v) },
       ],
@@ -2283,12 +3006,12 @@ function IsometrieModule() {
     {
       title: "Dessin",
       items: [
-        { label: "Sélection", hint: "V", run: () => { setInteractionMode("select"); setIsoDrawMode("select"); } },
-        { label: "Main / Pan", hint: "H", run: () => setInteractionMode("main") },
-        { label: "Nœud", hint: "N", run: () => { setInteractionMode("select"); setIsoDrawMode("node"); } },
-        { label: "Tube", hint: "T", run: () => { setInteractionMode("select"); setIsoDrawMode("segment"); } },
-        { label: "Té", hint: "E", run: () => { setInteractionMode("select"); setIsoDrawMode("te"); } },
-        { label: "Coude", hint: "C", run: () => { setInteractionMode("select"); setIsoDrawMode("coude"); } },
+        { label: "Sélection (Boîte / Clic)", hint: "V", run: () => { setInteractionMode("select"); setIsoDrawMode("select"); } },
+        { label: "Main / Pan", hint: "H / Espace", run: () => setInteractionMode("main") },
+        { label: "Nœud / Point", hint: "N", run: () => { setInteractionMode("select"); setIsoDrawMode("node"); } },
+        { label: "Tube / Tronçon", hint: "T", run: () => { setInteractionMode("select"); setIsoDrawMode("segment"); } },
+        { label: "Té de dérivation", hint: "E", run: () => { setInteractionMode("select"); setIsoDrawMode("te"); } },
+        { label: "Coude 90°", hint: "C", run: () => { setInteractionMode("select"); setIsoDrawMode("coude"); } },
       ],
     },
     {
@@ -2320,23 +3043,17 @@ function IsometrieModule() {
     {
       title: "Impression",
       items: [
-        { label: "Planche ISO", hint: "A3", run: () => setIsoMode((v) => (v === "editor" ? "planche" : "editor")) },
-        { label: "Imprimer", hint: "⎙", run: printPlanSheet },
-      ],
-    },
-    {
-      title: "Export",
-      items: [
-        { label: "Exporter JSON", hint: "⇩", run: exportProjectJson },
-        { label: "PDF / DXF", hint: "V4.8e", run: () => setStatusMessage("PDF/DXF prévu en V4.8e") },
+        { label: "Planche ISO A3", hint: "A3", run: () => setIsoMode((v) => (v === "editor" ? "planche" : "editor")) },
+        { label: "Imprimer feuille", hint: "⎙ / P", run: printPlanSheet },
       ],
     },
     {
       title: "Outils",
       items: [
+        { label: "📋 Tableau Propriétés & BOM", hint: "Table", run: () => { setPropertiesModalOpen(true); setPropertiesActiveTab("all"); } },
         { label: "Contrôle réseau", hint: graphErrorCount ? `${graphErrorCount} erreur(s)` : "OK", run: () => { setStudioLayout("control"); setLeftPanelOpen(true); } },
         { label: "Palette commandes", hint: "Ctrl+K", run: () => setCommandPaletteOpen(true) },
-        { label: "Raccourcis", hint: "?", run: () => setShortcutsOpen(true) },
+        { label: "Raccourcis clavier", hint: "?", run: () => setShortcutsOpen(true) },
       ],
     },
   ];
@@ -2376,32 +3093,32 @@ function IsometrieModule() {
         [data-pdi-studio] .pdi-cad-menu-item:disabled{opacity:.38;cursor:not-allowed}
         [data-pdi-studio] .pdi-cad-menu-hint{font-size:9px;color:#94A3B8;font-weight:900}
         [data-pdi-studio] .pdi-studio-rail{background:#11151B;border-right:1px solid var(--pdi-line);box-shadow:8px 0 24px rgba(0,0,0,.2)}
-        [data-pdi-studio] .pdi-rail-button{width:38px;height:38px;border:1px solid transparent;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#9CA3AF;background:#161B22;font-weight:900;font-size:14px}
+        [data-pdi-studio] .pdi-rail-button{width:38px;height:38px;border:1px solid rgba(255,255,255,0.06);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#9CA3AF;background:#161B22;font-weight:700;font-size:13px;cursor:pointer}
         [data-pdi-studio] .pdi-rail-button:hover{border-color:#3B82F6;color:#E6EDF3;background:#1C2735}
-        [data-pdi-studio] .pdi-rail-button.active{color:white;background:#2563EB;border-color:#60A5FA}
+        [data-pdi-studio] .pdi-rail-button.active{color:white;background:#2563EB;border-color:#60A5FA;box-shadow:0 0 12px rgba(37,99,235,0.4)}
 
-        [data-pdi-studio] button[title]{position:relative}
-        [data-pdi-studio] button[title]:hover::after{content:attr(title);position:absolute;left:50%;top:calc(100% + 8px);transform:translateX(-50%);z-index:10080;min-width:max-content;max-width:260px;padding:6px 8px;border-radius:8px;background:#020617;color:#E6EDF3;border:1px solid rgba(103,232,249,.35);box-shadow:0 14px 35px rgba(0,0,0,.45);font-size:10px;font-weight:900;letter-spacing:.01em;white-space:nowrap;pointer-events:none}
-        [data-pdi-studio] button[title]:hover::before{content:"";position:absolute;left:50%;top:100%;transform:translateX(-50%);border:5px solid transparent;border-bottom-color:rgba(103,232,249,.35);z-index:10081;pointer-events:none}
-        [data-pdi-studio] ::-webkit-scrollbar{width:10px;height:10px}[data-pdi-studio] ::-webkit-scrollbar-track{background:#0B0F14}[data-pdi-studio] ::-webkit-scrollbar-thumb{background:#374151;border:2px solid #0B0F14;border-radius:8px}
+        [data-pdi-studio] ::-webkit-scrollbar{width:8px;height:8px}[data-pdi-studio] ::-webkit-scrollbar-track{background:#0B0F14}[data-pdi-studio] ::-webkit-scrollbar-thumb{background:#374151;border:2px solid #0B0F14;border-radius:8px}
         @media(max-width:900px){[data-pdi-studio].pdi-studio-root{padding-left:8px!important;padding-top:92px!important}[data-pdi-studio] .pdi-studio-rail{display:none!important}[data-pdi-studio] .pdi-brand-subtitle{display:none}[data-pdi-studio] .pdi-cad-menubar{position:absolute;left:8px;right:8px;bottom:6px;overflow-x:auto;padding-bottom:1px}[data-pdi-studio] .pdi-cad-menu-trigger{font-size:10px;padding:0 8px}[data-pdi-studio] .pdi-svg-logo{min-width:170px!important;max-width:210px!important}}
         @media(max-width:1200px){[data-pdi-studio] .pdi-cad-menu-trigger{padding:0 7px;font-size:10px}}
 
         [data-pdi-studio] .pdi-compact-metrics, [data-pdi-studio] .pdi-metric-card{min-height:52px!important;padding:8px 10px!important;border-radius:14px!important}
         [data-pdi-studio] .pdi-compact-metrics h3, [data-pdi-studio] .pdi-metric-card h3{font-size:9px!important;margin:0!important}
         [data-pdi-studio] .pdi-compact-metrics strong, [data-pdi-studio] .pdi-metric-card strong{font-size:18px!important;line-height:1!important}
-        [data-pdi-studio] button[title]{position:relative}
-        [data-pdi-studio] button[title]:hover::after{content:attr(title);position:absolute;left:50%;top:calc(100% + 8px);transform:translateX(-50%);z-index:10080;min-width:max-content;max-width:260px;padding:6px 8px;border-radius:8px;background:#020617;color:#E6EDF3;border:1px solid rgba(103,232,249,.35);box-shadow:0 14px 35px rgba(0,0,0,.45);font-size:10px;font-weight:900;white-space:nowrap;pointer-events:none}
         [data-pdi-studio] .pdi-status-docked{height:28px!important;min-height:28px!important;padding-top:3px!important;padding-bottom:3px!important}
       `}</style>
       {workspaceFullscreen&&<>
         <header className="pdi-studio-topbar fixed left-0 right-0 top-0 z-[10008] h-[54px] px-3 flex items-center justify-between gap-3 text-white">
-              <div className="pdi-top-iso-title-007e hidden lg:flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950/60 px-3 py-1 text-[10px] font-black uppercase text-cyan-200" title="Vue isométrique 30°">
-                ↗ Vue isométrique 30° · {Math.round(viewport.zoom * 100)}%
-              </div>
-          <div className="flex items-center min-w-0 gap-3">
-
-          
+          <div className="flex items-center min-w-0 gap-2.5">
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent("pdi:navigate", { detail: "home" }))}
+              className="shrink-0 rounded-lg border border-cyan-500/50 bg-gradient-to-r from-cyan-950/80 to-blue-900/60 px-3 py-1.5 text-xs font-black text-cyan-200 hover:border-cyan-300 hover:text-white flex items-center gap-1.5 shadow-sm transition-all"
+              title="Retour à l'accueil PD&I"
+            >
+              <span className="text-base leading-none">⌂</span>
+              <span className="font-bold">Accueil</span>
+            </button>
+            <div className="h-6 w-px bg-slate-700/80"/>
             <button
               type="button"
               onClick={() => setAboutOpen(true)}
@@ -2420,7 +3137,7 @@ function IsometrieModule() {
               />
             </button>
             <div className="hidden lg:block h-7 w-px bg-slate-700"/>
-            <div className="hidden lg:block min-w-0"><div className="text-[9px] uppercase text-slate-500">Projet actif</div><div className="max-w-[260px] truncate text-xs font-bold">{projectName}</div></div>
+            <div className="hidden lg:block min-w-0"><div className="text-[9px] uppercase text-slate-500">Projet actif</div><div className="max-w-[220px] truncate text-xs font-bold">{projectName}</div></div>
           </div>
             <nav className="pdi-cad-menubar hidden md:flex" aria-label="Menus PD & I">
               {cadMenuGroups.map((group) => (
@@ -2449,39 +3166,57 @@ function IsometrieModule() {
               ))}
             </nav>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { setRightPanelOpen(true); setRightPanelTab("bom"); }}
+              className="h-8 px-2.5 rounded-lg border border-amber-500/40 bg-amber-950/40 hover:bg-amber-900/60 text-amber-200 text-xs font-bold flex items-center gap-1.5 transition-all"
+              title="Afficher la nomenclature et métré dans le panneau droit"
+            >
+              <FileText className="w-3.5 h-3.5 text-amber-300" />
+              <span className="hidden sm:inline">BOM & Métré</span>
+            </button>
             <div className="hidden xl:flex items-center gap-3 text-[10px] text-slate-400"><span>{nodes.length} nœuds</span><span>{segments.length} tronçons</span><span className={graphErrorCount?"text-red-400":"text-emerald-400"}>{graphErrorCount?`${graphErrorCount} erreur(s)`:"Graphe valide"}</span></div>
             <button onClick={()=>setCommandPaletteOpen(true)} className="h-8 px-2 rounded-md border border-slate-700 bg-slate-800 text-[10px] font-black" title="Palette commandes">⌘K</button>
-            
           </div>
         </header>
         <aside className="pdi-studio-rail fixed bottom-0 left-0 top-[54px] z-[10005] w-[62px] py-3 flex flex-col items-center gap-2">
-          <button title="Sélection" onClick={()=>{setInteractionMode("select");setIsoDrawMode("select")}} className={`pdi-rail-button ${interactionMode==="select"&&isoDrawMode==="select"?"active":""}`}>V</button>
-          <button title="Main / déplacement" onClick={()=>setInteractionMode("main")} className={`pdi-rail-button ${interactionMode==="main"?"active":""}`}>H</button>
-          <button title="Tube" onClick={()=>{setInteractionMode("select");setIsoDrawMode("segment")}} className={`pdi-rail-button ${isoDrawMode==="segment"?"active":""}`}>T</button>
-          <button title="Nœud" onClick={()=>{setInteractionMode("select");setIsoDrawMode("node")}} className={`pdi-rail-button ${isoDrawMode==="node"?"active":""}`}>N</button>
-          <button title="Té" onClick={()=>{setInteractionMode("select");setIsoDrawMode("te")}} className={`pdi-rail-button ${isoDrawMode==="te"?"active":""}`}>E</button>
-          <button title="Coude" onClick={()=>{setInteractionMode("select");setIsoDrawMode("coude")}} className={`pdi-rail-button ${isoDrawMode==="coude"?"active":""}`}>C</button>
+          <button title="Sélection (V)" onClick={()=>{setInteractionMode("select");setIsoDrawMode("select")}} className={`pdi-rail-button ${interactionMode==="select"&&isoDrawMode==="select"?"active":""}`}><MousePointer2 className="w-4 h-4" /></button>
+          <button title="Main / déplacement (H / Espace)" onClick={()=>setInteractionMode("main")} className={`pdi-rail-button ${interactionMode==="main"?"active":""}`}><Hand className="w-4 h-4" /></button>
+          <button title="Créer un Tube (T)" onClick={()=>{setInteractionMode("select");setIsoDrawMode("segment")}} className={`pdi-rail-button ${isoDrawMode==="segment"?"active":""}`}><Spline className="w-4 h-4" /></button>
+          <button title="Créer un Nœud (N)" onClick={()=>{setInteractionMode("select");setIsoDrawMode("node")}} className={`pdi-rail-button ${isoDrawMode==="node"?"active":""}`}><CircleDot className="w-4 h-4" /></button>
+          <button title="Insérer / Dérivation Té (E)" onClick={()=>{setInteractionMode("select");setIsoDrawMode("te")}} className={`pdi-rail-button ${isoDrawMode==="te"?"active":""}`}><GitFork className="w-4 h-4" /></button>
+          <button title="Insérer un Coude (C)" onClick={()=>{setInteractionMode("select");setIsoDrawMode("coude")}} className={`pdi-rail-button ${isoDrawMode==="coude"?"active":""}`}><CornerDownRight className="w-4 h-4" /></button>
           <button
-            title="Cotation"
+            title="Cotations & Dimensions (DIM)"
             onClick={() => {
               setInteractionMode("select");
               setIsoDrawMode("dimension");
               setDimensionPick(null);
+              setRightPanelOpen(true);
+              setRightPanelTab("dimensions");
             }}
             className={`pdi-rail-button ${isoDrawMode === "dimension" ? "active" : ""}`}
           >
-            DIM
+            <Ruler className="w-4 h-4" />
+          </button>
+          <button
+            title="Pivoter équipement sélectionné (R / Maj+R)"
+            onClick={() => rotateSelectedEquipment(15)}
+            className="pdi-rail-button hover:text-cyan-300"
+          >
+            <RotateCw className="w-4 h-4" />
           </button>
           <div className="my-1 h-px w-8 bg-slate-700"/>
-          <button title="Bibliothèque" onClick={()=>setLeftPanelOpen(v=>!v)} className={`pdi-rail-button ${leftPanelOpen?"active":""}`}>⧉</button>
-          <button title="Planche ISO" onClick={()=>setIsoMode(v=>v==="editor"?"planche":"editor")} className={`pdi-rail-button ${isoMode==="planche"?"active":""}`}>▣</button>
-          <button title="Imprimer" onClick={printPlanSheet} className="pdi-rail-button">⎙</button>
+          <button title="Propriétés & BOM (F2)" onClick={()=>{ setRightPanelOpen(true); setRightPanelTab("properties"); }} className={`pdi-rail-button hover:text-amber-300 ${rightPanelOpen?"active":""}`}><FileText className="w-4 h-4" /></button>
+          <button title="Bibliothèque équipements" onClick={()=>setLeftPanelOpen(v=>!v)} className={`pdi-rail-button ${leftPanelOpen?"active":""}`}><Layers className="w-4 h-4" /></button>
+          <button title="Planche ISO" onClick={()=>setIsoMode(v=>v==="editor"?"planche":"editor")} className={`pdi-rail-button ${isoMode==="planche"?"active":""}`}><Maximize2 className="w-4 h-4" /></button>
+          <button title="Imprimer Isométrie (P)" onClick={printPlanSheet} className="pdi-rail-button"><Printer className="w-4 h-4" /></button>
           <div className="my-1 h-px w-8 bg-slate-700"/>
-          <button title="Annuler (Ctrl+Z)" onClick={undoGraph} className="pdi-rail-button">↶</button>
-          <button title="Sauver JSON" onClick={exportProjectJson} className="pdi-rail-button">⇩</button>
-          <button title="Ouvrir JSON" onClick={()=>importProjectRef.current?.click()} className="pdi-rail-button">⇧</button>
+          <button title="Annuler (Ctrl+Z)" onClick={undoGraph} className="pdi-rail-button"><Undo2 className="w-4 h-4" /></button>
+          <button title="Sauvegarder JSON (Ctrl+S)" onClick={exportProjectJson} className="pdi-rail-button"><Download className="w-4 h-4" /></button>
+          <button title="Ouvrir JSON" onClick={()=>importProjectRef.current?.click()} className="pdi-rail-button"><FolderOpen className="w-4 h-4" /></button>
           <div className="flex-1"/>
-          <button title="Aide" onClick={()=>setShortcutsOpen(true)} className="pdi-rail-button">?</button>
+          <button title="Aide raccourcis (?)" onClick={()=>setShortcutsOpen(true)} className="pdi-rail-button"><Info className="w-4 h-4" /></button>
         </aside>
       </>}
       {aboutOpen && (
@@ -2596,7 +3331,256 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
 
       <div className={`${leftPanelOpen?"lg:col-span-3":"hidden"} ${workspaceFullscreen ? "h-full min-h-0 overflow-y-auto pr-1" : "space-y-3 lg:sticky lg:top-16 lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto lg:pr-1"} space-y-3`}>
 
-        <div className="bg-white rounded-2xl border border-slate-200 p-3 shadow-sm"><div className="flex items-center justify-between"><h3 className="text-xs font-black uppercase">Bibliothèque équipements</h3><span className="text-[9px] text-slate-400">glisser sur tube ou dessin</span></div><input value={libraryQuery} onChange={e=>setLibraryQuery(e.target.value)} placeholder="Rechercher vanne, coude, bride…" className="w-full mt-2 border rounded-lg px-3 py-2 text-xs"/><div className="grid grid-cols-2 gap-1.5 mt-2 max-h-64 overflow-y-auto">{libraryItems.map(t=><button key={t} type="button" draggable onDragStart={e=>{e.dataTransfer.setData("application/x-iso-equipment",t);e.dataTransfer.setData("text/plain",t);e.dataTransfer.effectAllowed="copy";setDraggedEquipmentType(t);setStatusMessage(`Glisser ${FITTING_LABELS[t]} sur le dessin`)}} onDragEnd={()=>setDraggedEquipmentType(null)} onClick={()=>{setFitType(t);setFitLabel(FITTING_LABELS[t]);setStatusMessage(`${FITTING_LABELS[t]} sélectionné`)}} onDoubleClick={()=>selectedSegmentId&&insertEquipmentNode(selectedSegmentId,t,.5,FITTING_LABELS[t])} className={`pdi-library-card ${fitType===t?"active":""} ${draggedEquipmentType===t?"dragging":""} min-h-12 p-2 rounded-lg border text-left text-[10px] font-bold`}><span className="block text-[9px] text-slate-400">{t.includes("vanne")?"VANNE":t.startsWith("coude")?"COUDE":t.includes("bride")||t==="jmi"?"RACCORD":"ÉQUIPEMENT"}</span>{FITTING_LABELS[t]}</button>)}</div></div>
+        {/* CAD Property Inspector for active selection */}
+        {(() => {
+          const selectedSeg = segments.find(s => s.id === selectedSegmentId || selectedSegmentIds.includes(s.id));
+          const selectedNd = nodes.find(n => n.id === selectedNodeId || selectedNodeIds.includes(n.id));
+          if (selectedSeg) {
+            return (
+              <div className="bg-slate-900 border-2 border-blue-500/70 rounded-2xl p-3 shadow-lg space-y-2.5 text-white">
+                <div className="flex items-center justify-between border-b border-slate-700 pb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <GitBranch className="w-4 h-4 text-blue-400" />
+                    <h3 className="text-xs font-black uppercase text-blue-300">Propriétés Tronçon</h3>
+                  </div>
+                  <span className="text-[10px] font-mono bg-blue-950 text-blue-300 px-2 py-0.5 rounded border border-blue-800 font-bold">
+                    DN{selectedSeg.dn} ({dia(selectedSeg.dn).inch})
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="col-span-2">
+                    <label className="text-[9px] font-bold text-slate-400 block mb-0.5">Pipeline / Source</label>
+                    <input
+                      value={selectedSeg.sourceName || ""}
+                      onChange={e => setSegments(prev => prev.map(s => s.id === selectedSeg.id ? { ...s, sourceName: e.target.value } : s))}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-bold text-white focus:ring-1 focus:ring-blue-400 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 block mb-0.5">Longueur (m)</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0.05"
+                      value={selectedSeg.length}
+                      onChange={e => setSegmentLength(selectedSeg.id, Number(e.target.value))}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono font-bold text-cyan-300 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 block mb-0.5">Diamètre</label>
+                    <select
+                      value={selectedSeg.dn}
+                      onChange={e => setSegments(prev => prev.map(s => s.id === selectedSeg.id ? { ...s, dn: Number(e.target.value) } : s))}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] font-bold text-white outline-none"
+                    >
+                      {DIAMETERS.map(([dn, inch, od]) => (
+                        <option key={dn} value={dn}>DN{dn} ({inch})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 block mb-0.5">Classe PN</label>
+                    <select
+                      value={selectedSeg.pn}
+                      onChange={e => setSegments(prev => prev.map(s => s.id === selectedSeg.id ? { ...s, pn: e.target.value } : s))}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] font-bold text-white outline-none"
+                    >
+                      <option>PN16</option>
+                      <option>PN40</option>
+                      <option>Class 150</option>
+                      <option>Class 300</option>
+                      <option>Class 600</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 block mb-0.5">Couleur</label>
+                    <div className="flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded px-2 py-0.5">
+                      <input
+                        type="color"
+                        value={selectedSeg.color || "#0284c7"}
+                        onChange={e => setSegments(prev => prev.map(s => s.id === selectedSeg.id ? { ...s, color: e.target.value } : s))}
+                        className="h-5 w-6 p-0 border-0 bg-transparent cursor-pointer"
+                      />
+                      <span className="text-[9px] font-mono text-slate-300 uppercase">{selectedSeg.color || "#0284c7"}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-1 pt-1 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => insertGraphicFitting(selectedSeg.id, "vanne_passage_total", 0.5)}
+                    className="flex-1 py-1 bg-sky-800/80 hover:bg-sky-700 text-sky-200 rounded text-[9px] font-black"
+                  >
+                    + Vanne
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => insertGraphicFitting(selectedSeg.id, "coude_90", 0.5)}
+                    className="flex-1 py-1 bg-amber-800/80 hover:bg-amber-700 text-amber-200 rounded text-[9px] font-black"
+                  >
+                    + Coude
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setIsoDrawMode("te"); setStatusMessage("Cliquez pour placer le Té"); }}
+                    className="flex-1 py-1 bg-purple-800/80 hover:bg-purple-700 text-purple-200 rounded text-[9px] font-black"
+                  >
+                    + Té
+                  </button>
+                </div>
+              </div>
+            );
+          }
+          if (selectedNd) {
+            return (
+              <div className="bg-slate-900 border-2 border-amber-500/70 rounded-2xl p-3 shadow-lg space-y-2.5 text-white">
+                <div className="flex items-center justify-between border-b border-slate-700 pb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <CircleDot className="w-4 h-4 text-amber-400" />
+                    <h3 className="text-xs font-black uppercase text-amber-300">
+                      {selectedNd.equipmentType ? equipmentLabel(selectedNd) : "Propriétés Point"}
+                    </h3>
+                  </div>
+                  <span className="text-[10px] font-mono bg-amber-950 text-amber-300 px-2 py-0.5 rounded border border-amber-800 font-bold">
+                    {selectedNd.type}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="col-span-2">
+                    <label className="text-[9px] font-bold text-slate-400 block mb-0.5">Nom / Repère</label>
+                    <input
+                      value={selectedNd.name}
+                      onChange={e => renameNode(selectedNd.id, e.target.value)}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-bold text-white focus:ring-1 focus:ring-amber-400 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 block mb-0.5">Coordonnées X / Y</label>
+                    <div className="text-xs font-mono text-cyan-300 font-bold bg-slate-800 px-2 py-1 rounded border border-slate-700">
+                      {selectedNd.x.toFixed(1)} , {selectedNd.y.toFixed(1)}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 block mb-0.5">Élévation Z (m)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={selectedNd.z || 0}
+                      onChange={e => setNodes(prev => prev.map(n => n.id === selectedNd.id ? { ...n, z: Number(e.target.value) || 0 } : n))}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono font-bold text-amber-300 outline-none"
+                    />
+                  </div>
+                </div>
+                {selectedNd.equipmentType && (
+                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => rotateSelectedEquipment(-15)}
+                      className="rounded border border-slate-700 bg-slate-800 py-1 text-[10px] font-black text-slate-200 hover:bg-slate-700"
+                    >
+                      −15°
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => rotateSelectedEquipment(15)}
+                      className="rounded border border-slate-700 bg-slate-800 py-1 text-[10px] font-black text-slate-200 hover:bg-slate-700"
+                    >
+                      +15°
+                    </button>
+                    <button
+                      type="button"
+                      onClick={flipSelectedEquipment}
+                      className="rounded border border-amber-600/80 bg-amber-950/60 py-1 text-[10px] font-black text-amber-300 hover:bg-amber-900"
+                    >
+                      Inverser
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          }
+          return null;
+        })()}
+
+        <div className="bg-slate-900 rounded-2xl border border-slate-700/80 p-3 shadow-lg">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-black uppercase text-slate-200 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-cyan-400" />
+              Bibliothèque équipements
+            </h3>
+            <span className="text-[9px] text-cyan-300 font-bold bg-cyan-950/80 border border-cyan-800/60 px-1.5 py-0.5 rounded">
+              Double-clic ou Glisser
+            </span>
+          </div>
+          <input
+            value={libraryQuery}
+            onChange={e => setLibraryQuery(e.target.value)}
+            placeholder="Rechercher vanne, coude, bride, clapet…"
+            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:border-cyan-400 outline-none mb-2"
+          />
+          <div className="grid grid-cols-2 gap-1.5 max-h-72 overflow-y-auto pr-1">
+            {libraryItems.map(t => {
+              const isValve = t.includes("vanne") || t.includes("soupape") || t.includes("clapet");
+              const isBend = t.startsWith("coude");
+              const isFlange = t.includes("bride") || t === "jmi";
+              const cat = isValve ? "VANNE" : isBend ? "COUDE" : isFlange ? "RACCORD" : "ÉQUIPEMENT";
+              const catColor = isValve ? "text-cyan-400" : isBend ? "text-amber-400" : isFlange ? "text-emerald-400" : "text-purple-400";
+              const svgGraphic = getFittingSvgGraphic(t, false);
+
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  draggable
+                  onDragStart={e => {
+                    e.dataTransfer.setData("application/x-iso-equipment", t);
+                    e.dataTransfer.setData("text/plain", t);
+                    e.dataTransfer.effectAllowed = "copy";
+                    setDraggedEquipmentType(t);
+                    setStatusMessage(`Glisser ${FITTING_LABELS[t]} sur le dessin`);
+                  }}
+                  onDragEnd={() => setDraggedEquipmentType(null)}
+                  onClick={() => {
+                    setFitType(t);
+                    setFitLabel(FITTING_LABELS[t]);
+                    setStatusMessage(`${FITTING_LABELS[t]} sélectionné`);
+                  }}
+                  onDoubleClick={() => {
+                    if (selectedSegmentId) {
+                      insertEquipmentNode(selectedSegmentId, t, 0.5, FITTING_LABELS[t]);
+                      setStatusMessage(`${FITTING_LABELS[t]} inséré sur le tronçon sélectionné`);
+                    } else if (selectedSegmentIds.length) {
+                      insertEquipmentNode(selectedSegmentIds[0], t, 0.5, FITTING_LABELS[t]);
+                      setStatusMessage(`${FITTING_LABELS[t]} inséré sur le tronçon sélectionné`);
+                    } else {
+                      // Insert at screen center
+                      const world = isoUnprojectV4(310, 200, viewport.zoom, viewport.panX, viewport.panY, nodeZ || 0);
+                      const node = makeEquipmentNode(t, FITTING_LABELS[t], snapIsoV4(world.x, isoSnapStep), snapIsoV4(world.y, isoSnapStep), nodeZ || 0, newDN, 0);
+                      setNodes(prev => [...prev, node]);
+                      setSelectedNodeId(node.id);
+                      setSelectedNodeIds([node.id]);
+                      setStatusMessage(`${FITTING_LABELS[t]} inséré au centre du plan`);
+                    }
+                  }}
+                  className={`pdi-library-card relative group p-2 rounded-xl border flex flex-col justify-between text-left transition-all ${
+                    fitType === t ? "active" : ""
+                  } ${draggedEquipmentType === t ? "dragging" : ""}`}
+                >
+                  <div className="flex items-center justify-between w-full mb-1">
+                    <span className={`text-[8px] font-black uppercase tracking-wider ${catColor}`}>{cat}</span>
+                    <div className="w-5 h-5 flex items-center justify-center shrink-0 opacity-80 group-hover:opacity-100">
+                      <svg viewBox="-18 -18 36 36" className="w-4 h-4 overflow-visible">
+                        <g dangerouslySetInnerHTML={{ __html: svgGraphic }} />
+                      </svg>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-bold text-slate-100 leading-snug line-clamp-2">{FITTING_LABELS[t]}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         {selectedEquipmentNodes.length>0&&<div className="bg-white rounded-2xl border border-slate-200 p-3 shadow-sm space-y-2"><div className="flex items-center justify-between"><h3 className="text-xs font-black uppercase">Orientation équipement</h3><span className="text-[9px] text-cyan-300">{selectedEquipmentNodes.length} sélectionné(s)</span></div><div className="text-[10px] text-slate-400 truncate">{selectedEquipmentNodes.map(e=>equipmentLabel(e)).join(", ")}</div><div className="grid grid-cols-3 gap-1"><button onClick={()=>rotateSelectedEquipment(-15)} className="rounded border border-slate-600 bg-slate-800 py-2 text-[10px] font-black">−15°</button><button onClick={()=>rotateSelectedEquipment(15)} className="rounded border border-slate-600 bg-slate-800 py-2 text-[10px] font-black">+15°</button><button onClick={flipSelectedEquipment} className="rounded border border-amber-600 bg-amber-950/40 py-2 text-[10px] font-black text-amber-300">Inverser</button></div><div className="text-[9px] text-slate-500">R / Maj+R : rotation · F : inverser</div></div>}
         <div className="bg-white rounded-2xl border border-slate-200 p-3 shadow-sm"><div className="flex items-center justify-between"><h3 className="text-xs font-black uppercase">Contrôle du réseau</h3><span className={`text-[10px] font-black ${graphErrorCount?"text-red-600":graphWarningCount?"text-amber-600":"text-emerald-600"}`}>{graphErrorCount} erreur(s) · {graphWarningCount} avert.</span></div><div className="mt-2 max-h-40 overflow-y-auto space-y-1">{!graphIssues.length?<div className="p-2 rounded-lg bg-emerald-50 text-emerald-700 text-[10px] font-bold">✓ Graphe cohérent</div>:graphIssues.slice(0,12).map(issue=><div key={issue.id} className={`p-2 rounded-lg text-[10px] ${issue.severity==="error"?"bg-red-50 text-red-700":"bg-amber-50 text-amber-700"}`}><b>{issue.code}</b> · {issue.message}</div>)}</div><div className="mt-2 text-[9px] text-slate-500">{projectJoints.length} joint(s) détecté(s), dont {projectJoints.filter(j=>j.weldNumber).length} soudure(s) potentielle(s).</div></div>
@@ -2706,7 +3690,7 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
         </div>
       </div>
 
-      <div className={`${leftPanelOpen?"lg:col-span-9":"lg:col-span-12"} ${workspaceFullscreen ? "h-full min-h-0" : ""}`}>
+      <div className={`${leftPanelOpen && rightPanelOpen ? "lg:col-span-6" : leftPanelOpen || rightPanelOpen ? "lg:col-span-9" : "lg:col-span-12"} ${workspaceFullscreen ? "h-full min-h-0" : ""}`}>
         <div className={`${workspaceFullscreen ? "h-full min-h-0 flex flex-col overflow-hidden" : ""} bg-slate-900 rounded-3xl border-2 border-slate-800 p-3 shadow-2xl`}>
           <div className="flex flex-wrap justify-between gap-2 text-white border-b border-slate-800 pb-3 mb-2">
             <div className="flex items-center gap-2"><span className="hidden">Vue isométrique 30°</span><span className="text-[10px] font-mono bg-slate-800 px-2 py-1 rounded">{Math.round(viewport.zoom*100)}%</span></div>
@@ -2734,20 +3718,54 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
               <button type="button" onClick={()=>setShowLabels(v=>!v)} className="px-2 py-1 bg-slate-700 rounded text-[10px] font-bold">Aa</button>
               <button type="button" onClick={zoomOut} className="px-2 py-1 bg-slate-700 rounded"><ZoomOut className="w-3.5 h-3.5"/></button>
               <button type="button" onClick={zoomIn} className="px-2 py-1 bg-slate-700 rounded"><ZoomIn className="w-3.5 h-3.5"/></button>
-              <button type="button" onClick={undoGraph} className="px-2 py-1 bg-red-700 hover:bg-red-600 rounded text-[10px] font-black flex items-center gap-1" title="Annuler (Ctrl+Z)"><Undo2 className="w-3.5 h-3.5"/>↶</button><button type="button" onClick={()=>{setSelectedNodeIds([]);setSelectedNodeId(null);setSelectedFitting(null)}} className="px-2 py-1 bg-slate-700 rounded text-[10px] font-bold" title="Désélectionner tout">×</button><button type="button" onClick={resetView} className="px-2 py-1 bg-slate-700 rounded" title="Recentrer"><RefreshCw className="w-3.5 h-3.5"/></button>
+              <button type="button" onClick={undoGraph} className="px-2 py-1 bg-red-800/80 hover:bg-red-700 rounded text-[10px] font-black flex items-center gap-1" title="Annuler (Ctrl+Z)"><Undo2 className="w-3.5 h-3.5"/>↶</button>
+              <button type="button" onClick={redoGraph} className="px-2 py-1 bg-blue-800/80 hover:bg-blue-700 rounded text-[10px] font-black flex items-center gap-1" title="Rétablir (Ctrl+Y / Ctrl+Shift+Z)"><Redo2 className="w-3.5 h-3.5"/>↷</button>
+              <button type="button" onClick={()=>{setSelectedNodeIds([]);setSelectedNodeId(null);setSelectedFitting(null);setSelectedSegmentIds([]);setSelectedSegmentId(null);}} className="px-2 py-1 bg-slate-700 rounded text-[10px] font-bold" title="Désélectionner tout">×</button>
+              <button type="button" onClick={resetView} className="px-2 py-1 bg-slate-700 rounded" title="Recentrer"><RefreshCw className="w-3.5 h-3.5"/></button>
             </div>
           </div>
-          
 
-          <div className={`${workspaceFullscreen ? "flex-1 min-h-0" : ""} bg-slate-950 rounded-2xl overflow-hidden border border-slate-800`}>
+          <div className={`${workspaceFullscreen ? "flex-1 min-h-0" : ""} bg-slate-950 rounded-2xl overflow-hidden border border-slate-800 relative`}>
             <svg ref={svgRef} viewBox="0 0 620 400" className={`${workspaceFullscreen ? "h-full min-h-[360px]" : "h-[clamp(520px,70vh,820px)]"} w-full select-none touch-none cursor-crosshair`}
-              onWheel={wheel} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect="copy"}} onDrop={dropEquipmentOnCanvas}>
+              onWheel={wheel} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp}
+              onContextMenu={openIsoContextMenu}
+              onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect="copy"}} onDrop={dropEquipmentOnCanvas}>
               {draggedEquipmentType&&<g pointerEvents="none"><rect x="8" y="8" width="250" height="28" rx="7" fill="#052e16" stroke="#22c55e"/><text x="20" y="26" fill="#86efac" fontSize="10" fontWeight="bold">Déposer sur un tube pour l’intégrer · ailleurs pour le placer</text></g>}
               <defs><marker id="isoArrowV2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#38bdf8"/></marker></defs>
               {gcVisibleEditor && gcUnderlay && <g pointerEvents="none"><image href={gcUnderlay} x={60+gcX} y={45+gcY} width={500*gcScale} height={300*gcScale} opacity={gcOpacity} preserveAspectRatio="none"/></g>}
 
-              {showGrid&&<g opacity=".13">{Array.from({length:80}).map((_,i)=><line key={"a"+i} x1={i*35-1000} y1="0" x2={i*35+600} y2="520" stroke="#38bdf8"/>)}
-                {Array.from({length:80}).map((_,i)=><line key={"b"+i} x1={i*35+1000} y1="0" x2={i*35-600} y2="520" stroke="#38bdf8"/>)}</g>}
+              {/* Dynamic Infinite Zoom/Pan-Aware Drafting Grid */}
+              {showGrid && (
+                <g pointerEvents="none" opacity="0.38">
+                  {(() => {
+                    const lines = [];
+                    const minor = Math.max(12, (isoSnapStep > 0 ? isoSnapStep * 40 : 25) * viewport.zoom);
+                    const major = minor * 4;
+                    const minX = -3000;
+                    const maxX = 4000;
+                    const minY = -2500;
+                    const maxY = 3500;
+
+                    const startX = Math.floor((minX - viewport.panX) / minor) * minor + viewport.panX;
+                    for (let x = startX; x <= maxX; x += minor) {
+                      const dist = Math.abs(x - viewport.panX);
+                      const isMaj = Math.abs(dist % major) < (minor * 0.45);
+                      lines.push(
+                        <line key={`gv_${x.toFixed(1)}`} x1={x.toFixed(1)} y1={minY} x2={x.toFixed(1)} y2={maxY} stroke="#0284c7" strokeWidth={isMaj ? "0.85" : "0.35"} strokeOpacity={isMaj ? "0.55" : "0.2"} />
+                      );
+                    }
+                    const startY = Math.floor((minY - viewport.panY) / minor) * minor + viewport.panY;
+                    for (let y = startY; y <= maxY; y += minor) {
+                      const dist = Math.abs(y - viewport.panY);
+                      const isMaj = Math.abs(dist % major) < (minor * 0.45);
+                      lines.push(
+                        <line key={`gh_${y.toFixed(1)}`} x1={minX} y1={y.toFixed(1)} x2={maxX} y2={y.toFixed(1)} stroke="#0284c7" strokeWidth={isMaj ? "0.85" : "0.35"} strokeOpacity={isMaj ? "0.55" : "0.2"} />
+                      );
+                    }
+                    return lines;
+                  })()}
+                </g>
+              )}
 
               <g>
                 {segments.map(s=>{
@@ -2755,12 +3773,22 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
                   if(!a||!b)return null;
                   const endpoints=segmentEndpoints(s,nodes);
                   const p1=endpoints?isoProjectV4(endpoints.from.x,endpoints.from.y,endpoints.from.z,viewport.zoom,viewport.panX,viewport.panY):iso(a);
-                  const p2=endpoints?isoProjectV4(endpoints.to.x,endpoints.to.y,endpoints.to.z,viewport.zoom,viewport.panX,viewport.panY):iso(b),sel=s.id===selectedSegmentId;
+                  const p2=endpoints?isoProjectV4(endpoints.to.x,endpoints.to.y,endpoints.to.z,viewport.zoom,viewport.panX,viewport.panY):iso(b),sel=s.id===selectedSegmentId||selectedSegmentIds.includes(s.id);
                   const width=clamp(s.dn/25,3,12),mx=(p1.x+p2.x)/2,my=(p1.y+p2.y)/2;
                   const dimensionAnnotation=editorAnnotationMap.get(`segment:${s.id}`);
-                  return <g key={s.id} data-iso-object="true" data-iso-segment="true" data-segment-id={s.id} style={{isolation:"isolate"}} onPointerDown={e=>{e.stopPropagation();selectSegmentV44(s.id,e.ctrlKey||e.metaKey||e.shiftKey)}}>
+                  return <g key={s.id} data-iso-object="true" data-iso-segment="true" data-segment-id={s.id} style={{isolation:"isolate"}}
+                    onPointerDown={e=>{e.stopPropagation();selectSegmentV44(s.id,e.ctrlKey||e.metaKey||e.shiftKey)}}
+                    onContextMenu={(e)=>{
+                      e.preventDefault();
+                      e.stopPropagation();
+                      selectSegmentV44(s.id, false);
+                      setContextMenu({ x: e.clientX, y: e.clientY, type: "segment", id: s.id });
+                    }}
+                    onPointerEnter={()=>setHoveredEntity({ type: "segment", id: s.id })}
+                    onPointerLeave={()=>setHoveredEntity(null)}>
                     {(() => { const pts=isoPolylineV4(s,a,b,viewport.zoom,viewport.panX,viewport.panY); const path=isoPathV4(pts); return <>
-                      {sel&&<path d={path} stroke="#38bdf8" strokeWidth={width+8} strokeOpacity=".28" strokeLinecap="round" strokeLinejoin="round" fill="none"/>}
+                      {sel&&<path d={path} stroke="#38bdf8" strokeWidth={width+8} strokeOpacity=".35" strokeLinecap="round" strokeLinejoin="round" fill="none"/>}
+                      {hoveredEntity?.type==="segment"&&hoveredEntity.id===s.id&&!sel&&<path d={path} stroke="#67e8f9" strokeWidth={width+4} strokeOpacity=".3" strokeLinecap="round" strokeLinejoin="round" fill="none"/>}
                       <path d={path} stroke={s.color||((s.pn.includes("600"))?"#f59e0b":"#0284c7")} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" fill="none"/>
                     </>; })()}
                     {showDimensions&&showPipeLabels&&s.length>=.5&&<g data-iso-object="true" transform={`translate(${dimensionAnnotation?.x??mx} ${dimensionAnnotation?.y??my-13})`}><rect x="-65" y="-10" width="130" height="18" rx="4" fill="#020617" stroke="#38bdf8"/><text x="0" y="3" fill="#e0f2fe" fontSize="8" fontWeight="900" textAnchor="middle">{(s.sourceName||("Pipeline "+dia(s.dn).inch))+" · L="+s.length.toFixed(2)+" m"}</text></g>}
@@ -2784,16 +3812,27 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
                   const isTee = n.type === "tee" && !n.equipmentType;
                   const isEquip = !!n.equipmentType;
                   const isSel = selectedNodeIds.includes(n.id) || n.id === selectedNodeId;
+                  const isHov = hoveredEntity?.type === "node" && hoveredEntity.id === n.id;
                   const fill = n.type==="entree_poste"?"#22c55e":n.type==="sortie_poste"?"#ef4444":isTee?"#8b5cf6":"#0284c7";
                   const nativePorts=(n.ports||[]).map(port=>{const w=portWorldPosition(n,port.id),sp=isoProjectV4(w.x,w.y,w.z,viewport.zoom,viewport.panX,viewport.panY);return {...port,sx:sp.x-p.x,sy:sp.y-p.y};});
                   const p0=nativePorts.find(port=>port.index===0),p1=nativePorts.find(port=>port.index===1);
                   const angle=p0&&p1?Math.atan2(p1.sy-p0.sy,p1.sx-p0.sx)*180/Math.PI:(n.rotation||0);
                   const isBend=!!n.equipmentType&&elbowAngle(n.equipmentType)>0;
                   const nodeAnnotation=editorAnnotationMap.get(`node:${n.id}`);
-                  return <g key={n.id} data-iso-object="true" data-iso-node="true" data-node-id={n.id} transform={`translate(${p.x} ${p.y})`} onClick={e=>{e.stopPropagation()}}>
+                  return <g key={n.id} data-iso-object="true" data-iso-node="true" data-node-id={n.id} transform={`translate(${p.x} ${p.y})`}
+                    onClick={e=>{e.stopPropagation()}}
+                    onPointerEnter={()=>setHoveredEntity({ type: "node", id: n.id })}
+                    onPointerLeave={()=>setHoveredEntity(null)}
+                    onContextMenu={(e)=>{
+                      e.preventDefault();
+                      e.stopPropagation();
+                      toggleNodeSelection(n.id, false);
+                      setContextMenu({ x: e.clientX, y: e.clientY, type: "node", id: n.id });
+                    }}>
                     {isEquip ? (
                       <g>
                         {isSel&&<rect x="-15" y="-15" width="30" height="30" rx="5" fill="none" stroke="#facc15" strokeWidth="1.5" strokeDasharray="4 2"/>}
+                        {isHov&&!isSel&&<rect x="-14" y="-14" width="28" height="28" rx="4" fill="none" stroke="#67e8f9" strokeWidth="1" strokeDasharray="2 2"/>}
                         {isBend&&p0&&p1?<path d={`M ${p0.sx} ${p0.sy} Q 0 0 ${p1.sx} ${p1.sy}`} stroke="#f59e0b" strokeWidth="4" fill="none" strokeLinecap="round"/>:<g transform={`rotate(${angle}) scale(1.3 ${n.mirrored?-1.3:1.3})`} dangerouslySetInnerHTML={{__html:getFittingSvgGraphic(n.equipmentType!,false)}}/>}
                         {nativePorts.map(port=>{
                           const joint=projectJoints.find(item=>item.nodeId===n.id&&item.portId===port.id);
@@ -2814,14 +3853,14 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
                       </g>
                     ) : isTee ? (
                       <g>
-                        <circle r={isSel?9:7} fill="#1e1b4b" stroke="#a78bfa" strokeWidth="2"/>
+                        <circle r={isSel?9:7} fill="#1e1b4b" stroke={isSel?"#facc15":"#a78bfa"} strokeWidth={2}/>
                         <path d="M -10 0 L 10 0 M 0 0 L 0 -12" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"/>
                         <g data-iso-port="true" data-port-node-id={n.id} data-port-idx="0" className="cursor-crosshair"><circle cx="-12" cy="0" r="4" fill="#8b5cf6" stroke="#ffffff" strokeWidth="1"/></g>
                         <g data-iso-port="true" data-port-node-id={n.id} data-port-idx="1" className="cursor-crosshair"><circle cx="12" cy="0" r="4" fill="#8b5cf6" stroke="#ffffff" strokeWidth="1"/></g>
                         <g data-iso-port="true" data-port-node-id={n.id} data-port-idx="2" className="cursor-crosshair"><circle cx="0" cy="-14" r="5" fill="#22c55e" stroke="#ffffff" strokeWidth="1.5"/></g>
                       </g>
                     ) : (
-                      <circle r={isSel?7:5} fill={fill} stroke="#e0f2fe" strokeWidth="1.5"/>
+                      <circle r={isSel?7:isHov?6:5} fill={fill} stroke={isSel?"#facc15":"#e0f2fe"} strokeWidth={isSel?2:1.5}/>
                     )}
                     {showLabels&&(viewport.zoom>=0.5||isEquip||isSel)&&(()=>{
                           const fullLabel=`${isEquip?equipmentLabel(n):n.name}${n.z?` (Z=${n.z}m)`:""}`;
@@ -2855,11 +3894,740 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
                     </g>
                   );
                 })()}
+
+                {/* User Dimensions (Interactive CAD Cotations) */}
+                {showDimensions && dimensions.map((dimension) => {
+                  const aNode = nodes.find((node) => node.id === dimension.a.nodeId);
+                  const bNode = nodes.find((node) => node.id === dimension.b.nodeId);
+                  if (!aNode || !bNode) return null;
+                  const aw = dimension.a.kind === "port" && dimension.a.portId ? portWorldPosition(aNode, dimension.a.portId) : aNode;
+                  const bw = dimension.b.kind === "port" && dimension.b.portId ? portWorldPosition(bNode, dimension.b.portId) : bNode;
+                  const p1 = isoProjectV4(aw.x, aw.y, aw.z, viewport.zoom, viewport.panX, viewport.panY);
+                  const p2 = isoProjectV4(bw.x, bw.y, bw.z, viewport.zoom, viewport.panX, viewport.panY);
+                  const offset = dimension.offset || { x: 0, y: -24 };
+                  const q1 = { x: p1.x + offset.x, y: p1.y + offset.y };
+                  const q2 = { x: p2.x + offset.x, y: p2.y + offset.y };
+                  const mx = (q1.x + q2.x) / 2, my = (q1.y + q2.y) / 2;
+                  const distValue = Math.hypot(bw.x - aw.x, bw.y - aw.y, bw.z - aw.z);
+                  const label = dimension.label || (dimension.unit === "mm" ? `${Math.round(distValue * 1000)} mm` : `${distValue.toFixed(2)} m`);
+                  const isDimSel = selectedDimensionId === dimension.id;
+
+                  return (
+                    <g
+                      key={dimension.id}
+                      data-iso-object="true"
+                      data-iso-dimension="true"
+                      data-dimension-id={dimension.id}
+                      className="cursor-pointer select-none"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedDimensionId(dimension.id);
+                        setRightPanelOpen(true);
+                        setRightPanelTab("dimensions");
+                        setStatusMessage(`Cotation sélectionnée : ${label}`);
+                      }}
+                    >
+                      {/* Extension lines from points */}
+                      <line x1={p1.x} y1={p1.y} x2={q1.x} y2={q1.y} stroke="#64748b" strokeWidth="0.8" strokeDasharray="3 3" opacity="0.75" />
+                      <line x1={p2.x} y1={p2.y} x2={q2.x} y2={q2.y} stroke="#64748b" strokeWidth="0.8" strokeDasharray="3 3" opacity="0.75" />
+                      {/* Main dimension line */}
+                      <line x1={q1.x} y1={q1.y} x2={q2.x} y2={q2.y} stroke={isDimSel ? "#38bdf8" : "#0891b2"} strokeWidth={isDimSel ? "2.2" : "1.5"} />
+                      {/* End ticks / arrows */}
+                      <circle cx={q1.x} cy={q1.y} r={isDimSel ? 3.5 : 2.5} fill="#ffffff" stroke={isDimSel ? "#38bdf8" : "#0891b2"} strokeWidth="1.5" />
+                      <circle cx={q2.x} cy={q2.y} r={isDimSel ? 3.5 : 2.5} fill="#ffffff" stroke={isDimSel ? "#38bdf8" : "#0891b2"} strokeWidth="1.5" />
+                      {/* Dimension label pill */}
+                      <g transform={`translate(${mx} ${my})`}>
+                        <rect
+                          x={-(label.length * 4.2 + 8)}
+                          y="-9"
+                          width={label.length * 8.4 + 16}
+                          height="18"
+                          rx="4"
+                          fill="#020617"
+                          stroke={isDimSel ? "#38bdf8" : "#0891b2"}
+                          strokeWidth={isDimSel ? "1.5" : "1"}
+                          className="shadow-md"
+                        />
+                        <text x="0" y="3.5" textAnchor="middle" fill={isDimSel ? "#7dd3fc" : "#22d3ee"} fontSize="8.5" fontWeight="900" fontFamily="monospace">
+                          {label}
+                        </text>
+                      </g>
+                    </g>
+                  );
+                })}
+
+                {/* Active Snap Reticle Indicator */}
+                {activeSnap && (
+                  <g pointerEvents="none" transform={`translate(${activeSnap.screenPos.x} ${activeSnap.screenPos.y})`}>
+                    <circle r="8" fill="none" stroke="#22d3ee" strokeWidth="1.5" strokeDasharray="3 2" />
+                    <circle r="2.5" fill="#22d3ee" />
+                    <g transform="translate(10 -8)">
+                      <rect x="-2" y="-10" width={activeSnap.label.length * 5.8 + 12} height="15" rx="3" fill="#020617" fillOpacity="0.95" stroke="#22d3ee" strokeWidth="0.8" />
+                      <text x="4" y="1" fill="#67e8f9" fontSize="7.5" fontWeight="bold">{activeSnap.label}</text>
+                    </g>
+                  </g>
+                )}
+                {/* Marquee Selection Rectangle */}
+                {marquee && (
+                  <rect
+                    x={Math.min(marquee.startX, marquee.currentX)}
+                    y={Math.min(marquee.startY, marquee.currentY)}
+                    width={Math.max(1, Math.abs(marquee.currentX - marquee.startX))}
+                    height={Math.max(1, Math.abs(marquee.currentY - marquee.startY))}
+                    fill={marquee.currentX < marquee.startX ? "#22c55e" : "#38bdf8"}
+                    fillOpacity="0.18"
+                    stroke={marquee.currentX < marquee.startX ? "#16a34a" : "#0284c7"}
+                    strokeWidth="1.2"
+                    strokeDasharray={marquee.currentX < marquee.startX ? "4 3" : undefined}
+                    pointerEvents="none"
+                  />
+                )}
               </g>
 
               <g transform="translate(550 45)"><circle r="22" fill="#0f172a" stroke="#0072bc"/><line x1="0" y1="-18" x2="0" y2="18" stroke="#38bdf8"/><line x1="-18" y1="0" x2="18" y2="0" stroke="#38bdf8"/><text y="-24" fill="#38bdf8" fontSize="9" textAnchor="middle">N</text><text x="24" y="3" fill="#cbd5e1" fontSize="8">E</text><text x="-24" y="3" fill="#cbd5e1" fontSize="8">O</text><text y="30" fill="#cbd5e1" fontSize="8" textAnchor="middle">S</text></g>
             </svg>
+
+            {/* Interactive CAD Context Menu */}
+            {contextMenu && (
+              <div
+                className="fixed z-[10005] bg-slate-900/95 backdrop-blur border border-slate-700 shadow-2xl rounded-xl py-1 min-w-[210px] text-xs text-slate-200"
+                style={{ left: Math.min(contextMenu.x, (typeof window !== "undefined" ? window.innerWidth : 800) - 220), top: Math.min(contextMenu.y, (typeof window !== "undefined" ? window.innerHeight : 600) - 300) }}
+                onMouseDown={e => e.stopPropagation()}
+              >
+                {contextMenu.type === "segment" && (
+                  <>
+                    <div className="px-3 py-1 text-[10px] font-black uppercase text-blue-400 border-b border-slate-800 flex justify-between">
+                      <span>Tronçon</span>
+                      <span className="font-mono text-slate-400">DN{segments.find(s=>s.id===contextMenu.id)?.dn}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { if (contextMenu.id) insertGraphicFitting(contextMenu.id, "vanne_passage_total", 0.5); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-blue-600 hover:text-white flex items-center gap-2"
+                    >
+                      <span>➕</span> Insérer Vanne (50%)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { if (contextMenu.id) insertGraphicFitting(contextMenu.id, "coude_90", 0.5); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-amber-600 hover:text-white flex items-center gap-2"
+                    >
+                      <span>➕</span> Insérer Coude 90°
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setIsoDrawMode("te"); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-purple-600 hover:text-white flex items-center gap-2"
+                    >
+                      <span>➕</span> Insérer Té de dérivation
+                    </button>
+                    <div className="h-px bg-slate-800 my-1" />
+                    <button
+                      type="button"
+                      onClick={() => { setPropertiesModalOpen(true); setPropertiesActiveTab("segments"); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2 text-amber-300"
+                    >
+                      <span>📋</span> Liste & Propriétés...
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { copySelection(); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>📄</span> Copier (Ctrl+C)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { duplicateSelection(); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>📑</span> Dupliquer (Ctrl+D)
+                    </button>
+                    <div className="h-px bg-slate-800 my-1" />
+                    <button
+                      type="button"
+                      onClick={() => { if (contextMenu.id) removeSegment(contextMenu.id); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 text-red-400 hover:bg-red-600 hover:text-white flex items-center gap-2"
+                    >
+                      <span>🗑️</span> Supprimer ce tronçon
+                    </button>
+                  </>
+                )}
+
+                {contextMenu.type === "node" && (
+                  <>
+                    <div className="px-3 py-1 text-[10px] font-black uppercase text-amber-400 border-b border-slate-800 flex justify-between">
+                      <span>Point / Nœud</span>
+                      <span className="font-mono text-slate-400">{nodes.find(n=>n.id===contextMenu.id)?.name}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { rotateSelectedEquipment(15); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>🔄</span> Rotation +15° (R)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { rotateSelectedEquipment(-15); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>🔄</span> Rotation −15° (Maj+R)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { flipSelectedEquipment(); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>🔀</span> Inverser / Miroir (F)
+                    </button>
+                    <div className="h-px bg-slate-800 my-1" />
+                    <button
+                      type="button"
+                      onClick={() => { setPropertiesModalOpen(true); setPropertiesActiveTab("nodes"); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2 text-amber-300"
+                    >
+                      <span>📋</span> Liste & Propriétés (Z/Élévation)...
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { copySelection(); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>📄</span> Copier (Ctrl+C)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { duplicateSelection(); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>📑</span> Dupliquer (Ctrl+D)
+                    </button>
+                    <div className="h-px bg-slate-800 my-1" />
+                    <button
+                      type="button"
+                      onClick={() => { if (contextMenu.id) removeNode(contextMenu.id); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 text-red-400 hover:bg-red-600 hover:text-white flex items-center gap-2"
+                    >
+                      <span>🗑️</span> Supprimer ce point
+                    </button>
+                  </>
+                )}
+
+                {contextMenu.type === "canvas" && (
+                  <>
+                    <div className="px-3 py-1 text-[10px] font-black uppercase text-slate-400 border-b border-slate-800">Espace ISO</div>
+                    <button
+                      type="button"
+                      onClick={() => { setPropertiesModalOpen(true); setPropertiesActiveTab("all"); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2 text-amber-300 font-bold"
+                    >
+                      <span>📋</span> Liste & Tableau des Propriétés (F2)
+                    </button>
+                    <div className="h-px bg-slate-800 my-1" />
+                    <button
+                      type="button"
+                      onClick={() => { pasteClipboard(); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>📋</span> Coller (Ctrl+V)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { undoGraph(); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>↶</span> Annuler (Ctrl+Z)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { redoGraph(); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>↷</span> Rétablir (Ctrl+Y)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { resetView(); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>⌖</span> Recentrer la vue (0 / F)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowGrid(v => !v); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>#</span> Basculer la grille
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowDimensions(v => !v); setContextMenu(null); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+                    >
+                      <span>⇔</span> Basculer cotations
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ================= PATCH 004 : menu contextuel ================= */}
+            {ctxMenu && (
+              <div
+                style={{position:"fixed",left:ctxMenu.x,top:ctxMenu.y,zIndex:9999}}
+                className="bg-slate-900/95 backdrop-blur border border-slate-700 text-slate-100 text-xs rounded-xl shadow-2xl p-1 w-56 flex flex-col gap-0.5"
+                onClick={e=>e.stopPropagation()}
+              >
+                <div className="px-2 py-1 text-[10px] font-bold text-slate-400 border-b border-slate-800 flex justify-between">
+                  <span>PD&amp;I &middot; &Eacute;dition</span>
+                  <button type="button" onClick={()=>setCtxMenu(null)} className="hover:text-white">&times;</button>
+                </div>
+                {selectedNodeIds.length>0 ? (
+                  <>
+                    <button type="button" onClick={copySelection} className="px-2 py-1 hover:bg-blue-600 rounded text-left flex justify-between"><span>Copier</span><span className="text-slate-400">Ctrl+C</span></button>
+                    <button type="button" onClick={cutSelection} className="px-2 py-1 hover:bg-blue-600 rounded text-left flex justify-between"><span>Couper</span><span className="text-slate-400">Ctrl+X</span></button>
+                    <button type="button" onClick={duplicateSelection} className="px-2 py-1 hover:bg-blue-600 rounded text-left flex justify-between"><span>Dupliquer</span><span className="text-slate-400">Ctrl+D</span></button>
+                    <button type="button" onClick={deleteSelection} className="px-2 py-1 hover:bg-red-600 rounded text-left text-red-300 flex justify-between"><span>Supprimer</span><span className="text-slate-400">Suppr</span></button>
+                    <div className="h-px bg-slate-800 my-0.5" />
+                    <button type="button" onClick={()=>{setPropsOpen(true);setCtxMenu(null);}} className="px-2 py-1 hover:bg-blue-600 rounded text-left flex justify-between font-bold text-amber-300"><span>Propri&eacute;t&eacute;s</span><span>P</span></button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" disabled={!clipboardRef.current?.nodes.length} onClick={pasteClipboard} className="px-2 py-1 hover:bg-blue-600 disabled:opacity-40 rounded text-left flex justify-between"><span>Coller</span><span className="text-slate-400">Ctrl+V</span></button>
+                    <button type="button" onClick={undoGraph} className="px-2 py-1 hover:bg-blue-600 rounded text-left flex justify-between"><span>Annuler</span><span className="text-slate-400">Ctrl+Z</span></button>
+                    <button type="button" onClick={redoGraph} className="px-2 py-1 hover:bg-blue-600 rounded text-left flex justify-between"><span>R&eacute;tablir</span><span className="text-slate-400">Ctrl+Y</span></button>
+                    <button type="button" onClick={()=>{resetView();setCtxMenu(null);}} className="px-2 py-1 hover:bg-blue-600 rounded text-left flex justify-between"><span>Recentrer la vue</span><span>0</span></button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ================= PATCH 004 : panneau de proprietes ================= */}
+            {propsOpen && (
+              <div className="absolute top-3 right-3 z-30 w-80 bg-slate-900/95 backdrop-blur border border-slate-700 text-slate-100 rounded-2xl shadow-2xl p-3 flex flex-col gap-2 max-h-[85vh] overflow-y-auto">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <strong className="text-xs font-black uppercase text-amber-300">Propri&eacute;t&eacute;s &middot; S&eacute;lection</strong>
+                  <button type="button" onClick={()=>setPropsOpen(false)} className="text-slate-400 hover:text-white px-1.5 py-0.5 rounded bg-slate-800 text-xs">&times;</button>
+                </div>
+                {selectedNodeIds.length===0 && (
+                  <p className="text-[11px] text-slate-400">S&eacute;lectionnez au moins un n&oelig;ud pour modifier ses coordonn&eacute;es et propri&eacute;t&eacute;s.</p>
+                )}
+                {selectedNodeIds.length===1 && (()=>{
+                  const node=nodes.find(n=>n.id===selectedNodeIds[0]);
+                  if(!node)return null;
+                  return (
+                    <div className="flex flex-col gap-2 text-xs">
+                      <div><label className="text-[10px] text-slate-400 font-bold">Nom</label>
+                        <input value={node.name} onChange={e=>setNodeMeta(node.id,{name:e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs"/>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        <div><label className="text-[10px] text-slate-400 font-bold">X (m)</label>
+                          <input type="number" step={isoSnapStep} value={node.x} onChange={e=>setNodeCoordinate(node.id,"x",e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs font-mono"/>
+                        </div>
+                        <div><label className="text-[10px] text-slate-400 font-bold">Y (m)</label>
+                          <input type="number" step={isoSnapStep} value={node.y} onChange={e=>setNodeCoordinate(node.id,"y",e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs font-mono"/>
+                        </div>
+                        <div><label className="text-[10px] text-slate-400 font-bold">&Eacute;l&eacute;vation Z</label>
+                          <input type="number" step={isoSnapStep} value={node.z} onChange={e=>setNodeCoordinate(node.id,"z",e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs font-mono"/>
+                        </div>
+                      </div>
+                      <div><label className="text-[10px] text-slate-400 font-bold">Ligne de tuyauterie</label>
+                        <select value={node.lineId||DEFAULT_LINE_ID} onChange={e=>setNodeMeta(node.id,{lineId:e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+                          {lines.map(l=><option key={l.id} value={l.id}>{l.lineNumber} — {l.service}</option>)}
+                        </select>
+                      </div>
+                      {node.equipmentType && (
+                        <div><label className="text-[10px] text-slate-400 font-bold">Libell&eacute; organe</label>
+                          <input value={node.equipmentLabel||""} placeholder={FITTING_LABELS[node.equipmentType]} onChange={e=>setNodeMeta(node.id,{equipmentLabel:e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs"/>
+                        </div>
+                      )}
+                      <div className="pt-2 border-t border-slate-800 flex justify-between">
+                        <button type="button" onClick={()=>removeNode(node.id)} className="px-2 py-1 bg-red-700 hover:bg-red-600 rounded text-white text-[11px] font-bold">Supprimer ce n&oelig;ud</button>
+                        <button type="button" onClick={duplicateSelection} className="px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded text-white text-[11px] font-bold">Dupliquer</button>
+                      </div>
+                    </div>
+                  );
+                })()}
+                {selectedNodeIds.length>1 && (
+                  <div className="flex flex-col gap-2 text-xs">
+                    <p className="text-[11px] text-cyan-300 font-bold">{selectedNodeIds.length} n&oelig;uds s&eacute;lectionn&eacute;s</p>
+                    <p className="text-[10px] text-slate-400">D&eacute;placement group&eacute; par fl&egrave;ches clavier (Shift = x4, Alt = Z) ou boutons :</p>
+                    <div className="grid grid-cols-3 gap-1 text-center">
+                      <button type="button" onClick={()=>moveSelection(0,-isoSnapStep,0)} className="bg-slate-800 hover:bg-slate-700 py-1 rounded text-[11px]">&uarr; Nord</button>
+                      <button type="button" onClick={()=>moveSelection(0,isoSnapStep,0)} className="bg-slate-800 hover:bg-slate-700 py-1 rounded text-[11px]">&darr; Sud</button>
+                      <button type="button" onClick={()=>moveSelection(-isoSnapStep,0,0)} className="bg-slate-800 hover:bg-slate-700 py-1 rounded text-[11px]">&larr; Ouest</button>
+                      <button type="button" onClick={()=>moveSelection(isoSnapStep,0,0)} className="bg-slate-800 hover:bg-slate-700 py-1 rounded text-[11px]">&rarr; Est</button>
+                      <button type="button" onClick={()=>moveSelection(0,0,isoSnapStep)} className="bg-slate-800 hover:bg-slate-700 py-1 rounded text-[11px] font-mono text-cyan-300">+Z</button>
+                      <button type="button" onClick={()=>moveSelection(0,0,-isoSnapStep)} className="bg-slate-800 hover:bg-slate-700 py-1 rounded text-[11px] font-mono text-cyan-300">-Z</button>
+                    </div>
+                    <div className="pt-2 border-t border-slate-800 flex justify-between">
+                      <button type="button" onClick={deleteSelection} className="px-2 py-1 bg-red-700 hover:bg-red-600 rounded text-white text-[11px] font-bold">Supprimer la s&eacute;lection</button>
+                      <button type="button" onClick={duplicateSelection} className="px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded text-white text-[11px] font-bold">Dupliquer le groupe</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+
+          {/* PROPERTIES & LIST TABLE MODAL */}
+          {propertiesModalOpen && (
+            <div className="fixed inset-0 z-[10020] bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 animate-fade-in">
+              <div className="w-full max-w-5xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-slate-200">
+                {/* Header */}
+                <div className="flex items-center justify-between px-5 py-3.5 bg-slate-950 border-b border-slate-800">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-xl">📋</span>
+                    <div>
+                      <h2 className="text-sm font-black uppercase text-white tracking-wide">Tableau des Propriétés & Nomenclature (BOM)</h2>
+                      <p className="text-[10px] text-slate-400">Consultation et édition directe des nœuds (X, Y, Z / Élévation), tronçons et accessoires</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPropertiesModalOpen(false)}
+                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Tabs */}
+                <div className="flex items-center gap-1 px-5 pt-3 border-b border-slate-800 bg-slate-950/60">
+                  <button
+                    type="button"
+                    onClick={() => setPropertiesActiveTab("all")}
+                    className={`px-3 py-2 text-xs font-bold rounded-t-lg transition-all ${propertiesActiveTab === "all" ? "bg-slate-900 text-cyan-300 border-t-2 border-cyan-400" : "text-slate-400 hover:text-slate-200"}`}
+                  >
+                    Vue Globale
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPropertiesActiveTab("nodes")}
+                    className={`px-3 py-2 text-xs font-bold rounded-t-lg transition-all ${propertiesActiveTab === "nodes" ? "bg-slate-900 text-cyan-300 border-t-2 border-cyan-400" : "text-slate-400 hover:text-slate-200"}`}
+                  >
+                    Nœuds & Élévations Z ({nodes.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPropertiesActiveTab("segments")}
+                    className={`px-3 py-2 text-xs font-bold rounded-t-lg transition-all ${propertiesActiveTab === "segments" ? "bg-slate-900 text-cyan-300 border-t-2 border-cyan-400" : "text-slate-400 hover:text-slate-200"}`}
+                  >
+                    Tronçons & Tuyauterie ({segments.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPropertiesActiveTab("fittings")}
+                    className={`px-3 py-2 text-xs font-bold rounded-t-lg transition-all ${propertiesActiveTab === "fittings" ? "bg-slate-900 text-cyan-300 border-t-2 border-cyan-400" : "text-slate-400 hover:text-slate-200"}`}
+                  >
+                    Équipements & Vannes ({segments.reduce((acc, s) => acc + s.fittings.length, 0)})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPropertiesActiveTab("bom")}
+                    className={`px-3 py-2 text-xs font-bold rounded-t-lg transition-all ${propertiesActiveTab === "bom" ? "bg-slate-900 text-cyan-300 border-t-2 border-cyan-400" : "text-slate-400 hover:text-slate-200"}`}
+                  >
+                    Nomenclature Matérielle (BOM)
+                  </button>
+                </div>
+
+                {/* Content */}
+                <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                  {(propertiesActiveTab === "all" || propertiesActiveTab === "nodes") && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-xs font-bold text-amber-300 uppercase tracking-wider">● Tableau des Nœuds & Élévations (Z)</h3>
+                        <span className="text-[10px] text-slate-400 font-mono">Modifiez X, Y ou Z directement dans les champs</span>
+                      </div>
+                      <div className="overflow-x-auto border border-slate-800 rounded-xl bg-slate-950">
+                        <table className="w-full text-[11px] text-left">
+                          <thead className="bg-slate-900/90 text-slate-400 uppercase text-[9px] border-b border-slate-800 font-bold">
+                            <tr>
+                              <th className="p-2.5">ID / Nom</th>
+                              <th className="p-2.5">Type / Équipement</th>
+                              <th className="p-2.5">X (m)</th>
+                              <th className="p-2.5">Y (m)</th>
+                              <th className="p-2.5 text-cyan-300">Z / Élévation (m)</th>
+                              <th className="p-2.5">Rotation</th>
+                              <th className="p-2.5">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60 font-mono">
+                            {nodes.map(n => (
+                              <tr key={n.id} className="hover:bg-slate-800/40 transition-colors">
+                                <td className="p-2">
+                                  <input
+                                    value={n.name}
+                                    onChange={e => renameNode(n.id, e.target.value)}
+                                    className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs font-sans font-bold text-white w-32 focus:border-cyan-400 outline-none"
+                                  />
+                                </td>
+                                <td className="p-2 font-sans text-xs">
+                                  <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-bold">
+                                    {n.equipmentType ? equipmentLabel(n) : n.type}
+                                  </span>
+                                </td>
+                                <td className="p-2">
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    value={n.x}
+                                    onChange={e => {
+                                      const nextNodes = nodes.map(x => x.id === n.id ? { ...x, x: Number(e.target.value) || 0 } : x);
+                                      commitGraph(nextNodes, recalcSegmentLengths(nextNodes, segments));
+                                    }}
+                                    className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white w-20 outline-none focus:border-cyan-400"
+                                  />
+                                </td>
+                                <td className="p-2">
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    value={n.y}
+                                    onChange={e => {
+                                      const nextNodes = nodes.map(x => x.id === n.id ? { ...x, y: Number(e.target.value) || 0 } : x);
+                                      commitGraph(nextNodes, recalcSegmentLengths(nextNodes, segments));
+                                    }}
+                                    className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white w-20 outline-none focus:border-cyan-400"
+                                  />
+                                </td>
+                                <td className="p-2">
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    value={n.z ?? 0}
+                                    onChange={e => {
+                                      const nextNodes = nodes.map(x => x.id === n.id ? { ...x, z: Number(e.target.value) || 0 } : x);
+                                      commitGraph(nextNodes, recalcSegmentLengths(nextNodes, segments));
+                                    }}
+                                    className="bg-cyan-950/60 border border-cyan-700/80 rounded px-2 py-1 text-xs text-cyan-300 font-bold w-20 outline-none focus:border-cyan-400"
+                                  />
+                                </td>
+                                <td className="p-2 text-slate-400">
+                                  {n.equipmentType ? `${Math.round(n.rotation || 0)}°` : "—"}
+                                </td>
+                                <td className="p-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => removeNode(n.id)}
+                                    className="px-2 py-1 rounded bg-red-950/60 border border-red-800/80 hover:bg-red-900 text-red-300 text-[10px] font-sans font-bold"
+                                  >
+                                    Supprimer
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {(propertiesActiveTab === "all" || propertiesActiveTab === "segments") && (
+                    <div className="space-y-2 pt-2">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-xs font-bold text-blue-300 uppercase tracking-wider">● Tableau des Tronçons de Tuyauterie</h3>
+                        <span className="text-[10px] text-slate-400 font-mono">Modifiez DN, PN, Longueur et Source</span>
+                      </div>
+                      <div className="overflow-x-auto border border-slate-800 rounded-xl bg-slate-950">
+                        <table className="w-full text-[11px] text-left">
+                          <thead className="bg-slate-900/90 text-slate-400 uppercase text-[9px] border-b border-slate-800 font-bold">
+                            <tr>
+                              <th className="p-2.5">N° / Source</th>
+                              <th className="p-2.5">De → Vers</th>
+                              <th className="p-2.5">DN (Pouces)</th>
+                              <th className="p-2.5">Classe PN</th>
+                              <th className="p-2.5">Matériau</th>
+                              <th className="p-2.5 text-cyan-300">Longueur (m)</th>
+                              <th className="p-2.5">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {segments.map((s, idx) => {
+                              const fromNodeName = nodes.find(n => n.id === s.fromNodeId)?.name || "Inconnu";
+                              const toNodeName = nodes.find(n => n.id === s.toNodeId)?.name || "Inconnu";
+                              return (
+                                <tr key={s.id} className="hover:bg-slate-800/40 transition-colors font-mono">
+                                  <td className="p-2">
+                                    <input
+                                      value={s.sourceName || ""}
+                                      onChange={e => setSegments(prev => prev.map(x => x.id === s.id ? { ...x, sourceName: e.target.value } : x))}
+                                      className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs font-sans font-bold text-white w-40 outline-none focus:border-cyan-400"
+                                      placeholder={`Pipeline #${idx + 1}`}
+                                    />
+                                  </td>
+                                  <td className="p-2 font-sans text-xs text-slate-300">
+                                    {fromNodeName} → {toNodeName}
+                                  </td>
+                                  <td className="p-2">
+                                    <select
+                                      value={s.dn}
+                                      onChange={e => setSegments(prev => prev.map(x => x.id === s.id ? { ...x, dn: Number(e.target.value) } : x))}
+                                      className="bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs text-white outline-none"
+                                    >
+                                      {DIAMETERS.map(([dn, inch]) => (
+                                        <option key={dn} value={dn}>DN{dn} ({inch})</option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td className="p-2">
+                                    <select
+                                      value={s.pn}
+                                      onChange={e => setSegments(prev => prev.map(x => x.id === s.id ? { ...x, pn: e.target.value } : x))}
+                                      className="bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs text-white outline-none"
+                                    >
+                                      <option>PN16</option>
+                                      <option>PN40</option>
+                                      <option>Class 150</option>
+                                      <option>Class 300</option>
+                                      <option>Class 600</option>
+                                    </select>
+                                  </td>
+                                  <td className="p-2 font-sans text-[10px] text-slate-300">
+                                    {s.material || "Acier API 5L Gr. B"}
+                                  </td>
+                                  <td className="p-2">
+                                    <input
+                                      type="number"
+                                      step="0.05"
+                                      min="0.05"
+                                      value={s.length}
+                                      onChange={e => setSegmentLength(s.id, Number(e.target.value))}
+                                      className="bg-cyan-950/60 border border-cyan-700/80 rounded px-2 py-1 text-xs text-cyan-300 font-bold w-20 outline-none focus:border-cyan-400"
+                                    />
+                                  </td>
+                                  <td className="p-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => removeSegment(s.id)}
+                                      className="px-2 py-1 rounded bg-red-950/60 border border-red-800/80 hover:bg-red-900 text-red-300 text-[10px] font-sans font-bold"
+                                    >
+                                      Supprimer
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {(propertiesActiveTab === "all" || propertiesActiveTab === "fittings") && (
+                    <div className="space-y-2 pt-2">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-xs font-bold text-purple-300 uppercase tracking-wider">● Accessoires, Vannes & Robinetterie</h3>
+                        <span className="text-[10px] text-slate-400 font-mono">Position cumulée et désignation</span>
+                      </div>
+                      <div className="overflow-x-auto border border-slate-800 rounded-xl bg-slate-950">
+                        <table className="w-full text-[11px] text-left">
+                          <thead className="bg-slate-900/90 text-slate-400 uppercase text-[9px] border-b border-slate-800 font-bold">
+                            <tr>
+                              <th className="p-2.5">Cumul (m)</th>
+                              <th className="p-2.5">Équipement / Label</th>
+                              <th className="p-2.5">Type</th>
+                              <th className="p-2.5">DN</th>
+                              <th className="p-2.5">Réf. fabricant</th>
+                              <th className="p-2.5">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {segments.flatMap(s => s.fittings.map(f => ({ f, s, p: cumulative.fittings.get(f.id) || 0 }))).map(row => (
+                              <tr key={row.f.id} className="hover:bg-slate-800/40 transition-colors font-mono">
+                                <td className="p-2 text-cyan-300 font-bold">{row.p.toFixed(3)} m</td>
+                                <td className="p-2 font-sans font-bold text-white">{row.f.label}</td>
+                                <td className="p-2 font-sans text-xs text-slate-300">{FITTING_LABELS[row.f.type] || row.f.type}</td>
+                                <td className="p-2">DN{row.f.dn || row.s.dn}</td>
+                                <td className="p-2 text-slate-400">{row.f.reference || "Non défini"}</td>
+                                <td className="p-2 font-sans">
+                                  <button
+                                    type="button"
+                                    onClick={() => setEdit({ segmentId: row.s.id, fitting: { ...row.f, cumulativePosition: row.p } })}
+                                    className="px-2 py-1 rounded bg-blue-950/60 border border-blue-800/80 hover:bg-blue-900 text-blue-300 text-[10px] font-bold mr-1.5"
+                                  >
+                                    Éditer
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeFitting(row.s.id, row.f.id)}
+                                    className="px-2 py-1 rounded bg-red-950/60 border border-red-800/80 hover:bg-red-900 text-red-300 text-[10px] font-bold"
+                                  >
+                                    Supprimer
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {(propertiesActiveTab === "all" || propertiesActiveTab === "bom") && (
+                    <div className="space-y-2 pt-2">
+                      <h3 className="text-xs font-bold text-emerald-300 uppercase tracking-wider">● Synthèse Nomenclature Matérielle (BOM)</h3>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-center">
+                          <span className="text-[10px] text-slate-400 block font-bold uppercase">Longueur Totale Tube</span>
+                          <strong className="text-lg font-mono text-cyan-300">{totalLength.toFixed(2)} m</strong>
+                        </div>
+                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-center">
+                          <span className="text-[10px] text-slate-400 block font-bold uppercase">Poids Acier Estimé</span>
+                          <strong className="text-lg font-mono text-amber-300">{totalWeight.toFixed(1)} kg</strong>
+                        </div>
+                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-center">
+                          <span className="text-[10px] text-slate-400 block font-bold uppercase">Volume d'Épreuve</span>
+                          <strong className="text-lg font-mono text-emerald-300">{totalVolume.toFixed(1)} L</strong>
+                        </div>
+                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-center">
+                          <span className="text-[10px] text-slate-400 block font-bold uppercase">Pression d'Épreuve</span>
+                          <strong className="text-lg font-mono text-red-400">{hydrotest.toFixed(1)} bar</strong>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer */}
+                <div className="px-5 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
+                  <div className="text-[11px] text-slate-400">
+                    Projet : <span className="text-white font-bold">{projectName}</span> · <span className="font-mono text-cyan-300">{nodes.length}</span> points · <span className="font-mono text-cyan-300">{segments.length}</span> tronçons
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const csvContent = "data:text/csv;charset=utf-8," +
+                          "TYPE,NOM/LABEL,X,Y,Z,DN,PN,LONGUEUR\n" +
+                          nodes.map(n => `NOEUD,"${n.name}",${n.x},${n.y},${n.z || 0},,,`).join("\n") + "\n" +
+                          segments.map(s => `TRONCON,"${s.sourceName || "Tube"}",,,,${s.dn},${s.pn},${s.length}`).join("\n");
+                        const encodedUri = encodeURI(csvContent);
+                        const link = document.createElement("a");
+                        link.setAttribute("href", encodedUri);
+                        link.setAttribute("download", `pdi_properties_${projectName.replace(/\s+/g, "_")}.csv`);
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        setStatusMessage("Tableau exporté en CSV");
+                      }}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1.5"
+                    >
+                      <span>📥</span> Exporter CSV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPropertiesModalOpen(false)}
+                      className="px-4 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold transition-all"
+                    >
+                      Fermer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {isoDrawMode!=="select"&&<div className="mt-3 bg-blue-950 border border-blue-700 rounded-xl p-3 text-[10px] text-blue-100"><b>MODE {isoDrawMode.toUpperCase()}</b>{" — "}{isoDrawMode==="node"&&"cliquez dans le plan pour créer un nœud."}{isoDrawMode==="segment"&&"cliquez un nœud origine puis un nœud destination."}{isoDrawMode==="te"&&"Té : cliquez un port violet/vert puis glissez jusqu’à un nœud ou relâchez pour créer un piquage."}{isoDrawMode==="coude"&&"cliquez le repère orange sur un tronçon."}
                 {isoDrawMode==="dimension"&&"cliquez deux nœuds ou ports pour créer une cotation persistante."}</div>}
@@ -2871,13 +4639,444 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
           </div>
         </div>
 
-        <div className="mt-4 bg-white rounded-2xl border border-slate-200 p-4">
-          <h3 className="text-xs font-black uppercase border-b pb-2 flex gap-2"><Ruler className="w-4 h-4 text-blue-600"/>Chaîne cumulative / nomenclature</h3>
-          <div className="overflow-x-auto mt-3"><table className="w-full text-[10px]"><thead><tr className="border-b text-left"><th className="p-2">Cumul</th><th className="p-2">Équipement</th><th className="p-2">DN</th><th className="p-2">Tronçon</th></tr></thead><tbody>
+        {!workspaceFullscreen && (
+          <div className="mt-4 bg-white rounded-2xl border border-slate-200 p-4">
+            <h3 className="text-xs font-black uppercase border-b pb-2 flex gap-2"><Ruler className="w-4 h-4 text-blue-600"/>Chaîne cumulative / nomenclature</h3>
+            <div className="overflow-x-auto mt-3"><table className="w-full text-[10px]"><thead><tr className="border-b text-left"><th className="p-2">Cumul</th><th className="p-2">Équipement</th><th className="p-2">DN</th><th className="p-2">Tronçon</th></tr></thead><tbody>
 
-            {segments.flatMap(s=>s.fittings.map((f,idx)=>({f,s,idx,p:cumulative.fittings.get(f.id)||0}))).sort((a,b)=>a.p-b.p).map(r=><tr key={r.f.id} onClick={()=>selectFittingV44(r.s.id,r.f.id,false)} className={`border-b cursor-pointer ${selectedFittingIds.includes(r.f.id)?"bg-amber-100 ring-2 ring-inset ring-amber-400":"hover:bg-blue-50"}`}><td className="p-2 font-mono font-bold">{r.p.toFixed(3)} m</td><td className="p-2 font-bold">{r.f.label}</td><td className="p-2">DN{r.f.dn||r.s.dn} {dia(r.f.dn||r.s.dn).inch}</td><td className="p-2">#{r.idx+1}</td><td className="p-2"><div className="flex gap-1"><button type="button" onClick={e=>{e.stopPropagation();moveFitting(r.s.id,r.f.id,-1)}} className="px-2 py-1 bg-slate-100 rounded text-[10px]">↑</button><button type="button" onClick={e=>{e.stopPropagation();moveFitting(r.s.id,r.f.id,1)}} className="px-2 py-1 bg-slate-100 rounded text-[10px]">↓</button><button type="button" onClick={e=>{e.stopPropagation();moveFittingTo(r.s.id,r.f.id,0)}} className="px-2 py-1 bg-blue-50 text-blue-700 rounded text-[9px]">TÊTE</button></div></td></tr>)}
+              {segments.flatMap(s=>s.fittings.map((f,idx)=>({f,s,idx,p:cumulative.fittings.get(f.id)||0}))).sort((a,b)=>a.p-b.p).map(r=><tr key={r.f.id} onClick={()=>selectFittingV44(r.s.id,r.f.id,false)} className={`border-b cursor-pointer ${selectedFittingIds.includes(r.f.id)?"bg-amber-100 ring-2 ring-inset ring-amber-400":"hover:bg-blue-50"}`}><td className="p-2 font-mono font-bold">{r.p.toFixed(3)} m</td><td className="p-2 font-bold">{r.f.label}</td><td className="p-2">DN{r.f.dn||r.s.dn} {dia(r.f.dn||r.s.dn).inch}</td><td className="p-2">#{r.idx+1}</td><td className="p-2"><div className="flex gap-1"><button type="button" onClick={e=>{e.stopPropagation();moveFitting(r.s.id,r.f.id,-1)}} className="px-2 py-1 bg-slate-100 rounded text-[10px]">↑</button><button type="button" onClick={e=>{e.stopPropagation();moveFitting(r.s.id,r.f.id,1)}} className="px-2 py-1 bg-slate-100 rounded text-[10px]">↓</button><button type="button" onClick={e=>{e.stopPropagation();moveFittingTo(r.s.id,r.f.id,0)}} className="px-2 py-1 bg-blue-50 text-blue-700 rounded text-[9px]">TÊTE</button></div></td></tr>)}
 
-          </tbody></table></div>
+            </tbody></table></div>
+          </div>
+        )}
+      </div>
+
+      {/* Right Collapsible Detail Bar */}
+      <div className={`${rightPanelOpen ? "lg:col-span-3" : "hidden"} ${workspaceFullscreen ? "h-full min-h-0 overflow-y-auto pl-1" : "space-y-3 lg:sticky lg:top-16 lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto lg:pl-1"} space-y-3`}>
+        <div className="bg-slate-900 border border-slate-700/80 rounded-2xl p-3 shadow-xl text-white space-y-3">
+          {/* Header with tabs & close button */}
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <div className="flex items-center gap-1 overflow-x-auto py-0.5">
+              <button
+                type="button"
+                onClick={() => setRightPanelTab("bom")}
+                className={`px-2 py-1 rounded-lg text-[10px] font-black transition-all ${rightPanelTab === "bom" ? "bg-emerald-600 text-white shadow-sm" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+              >
+                BOM
+              </button>
+              <button
+                type="button"
+                onClick={() => setRightPanelTab("dimensions")}
+                className={`px-2 py-1 rounded-lg text-[10px] font-black transition-all ${rightPanelTab === "dimensions" ? "bg-cyan-600 text-white shadow-sm" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+              >
+                Cotations ({dimensions.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setRightPanelTab("snap")}
+                className={`px-2 py-1 rounded-lg text-[10px] font-black transition-all ${rightPanelTab === "snap" ? "bg-amber-600 text-white shadow-sm" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+              >
+                Snap
+              </button>
+              <button
+                type="button"
+                onClick={() => setRightPanelTab("properties")}
+                className={`px-2 py-1 rounded-lg text-[10px] font-black transition-all ${rightPanelTab === "properties" ? "bg-blue-600 text-white shadow-sm" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+              >
+                Propriétés
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRightPanelOpen(false)}
+              className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+              title="Fermer le panneau latéral"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* TAB: BOM */}
+          {rightPanelTab === "bom" && (
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-1.5">
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-center">
+                  <span className="text-[8px] font-bold text-slate-400 uppercase block">Longueur totale</span>
+                  <strong className="text-cyan-300 font-mono text-sm">{totalLength.toFixed(2)} m</strong>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-center">
+                  <span className="text-[8px] font-bold text-slate-400 uppercase block">Poids acier</span>
+                  <strong className="text-amber-300 font-mono text-sm">{totalWeight.toFixed(1)} kg</strong>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-center">
+                  <span className="text-[8px] font-bold text-slate-400 uppercase block">Vol. épreuve</span>
+                  <strong className="text-emerald-300 font-mono text-sm">{totalVolume.toFixed(1)} L</strong>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-center">
+                  <span className="text-[8px] font-bold text-slate-400 uppercase block">Pression épreuve</span>
+                  <strong className="text-red-400 font-mono text-sm">{hydrotest.toFixed(1)} bar</strong>
+                </div>
+              </div>
+
+              <div className="border border-slate-800 rounded-xl bg-slate-950/60 p-2 space-y-1.5 max-h-56 overflow-y-auto">
+                <div className="text-[9px] font-black uppercase text-slate-400 flex justify-between">
+                  <span>Équipements & Raccords</span>
+                  <span>{segments.reduce((acc, s) => acc + s.fittings.length, 0)} items</span>
+                </div>
+                {segments.flatMap(s => s.fittings.map(f => ({ f, s, p: cumulative.fittings.get(f.id) || 0 }))).sort((a, b) => a.p - b.p).map(row => (
+                  <div key={row.f.id} className="flex items-center justify-between text-[10px] p-1.5 rounded-lg bg-slate-900 border border-slate-800/80 hover:border-slate-700">
+                    <div className="min-w-0">
+                      <span className="font-bold text-slate-100 truncate block">{row.f.label}</span>
+                      <span className="text-[8px] text-cyan-400 font-mono">DN{row.f.dn || row.s.dn} · {row.p.toFixed(2)}m</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEdit({ segmentId: row.s.id, fitting: { ...row.f, cumulativePosition: row.p } })}
+                      className="text-slate-400 hover:text-cyan-300 p-1"
+                    >
+                      <Pencil className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const csvContent = "data:text/csv;charset=utf-8," +
+                    "TYPE,NOM/LABEL,X,Y,Z,DN,PN,LONGUEUR\n" +
+                    nodes.map(n => `NOEUD,"${n.name}",${n.x},${n.y},${n.z || 0},,,`).join("\n") + "\n" +
+                    segments.map(s => `TRONCON,"${s.sourceName || "Tube"}",,,,${s.dn},${s.pn},${s.length}`).join("\n");
+                  const encodedUri = encodeURI(csvContent);
+                  const link = document.createElement("a");
+                  link.setAttribute("href", encodedUri);
+                  link.setAttribute("download", `pdi_bom_${projectName.replace(/\s+/g, "_")}.csv`);
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                  setStatusMessage("Nomenclature exportée en CSV");
+                }}
+                className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-[10px] font-black transition-all flex items-center justify-center gap-1.5"
+              >
+                <span>📥</span> Exporter Nomenclature CSV
+              </button>
+            </div>
+          )}
+
+          {/* TAB: DIMENSIONS */}
+          {rightPanelTab === "dimensions" && (
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black text-cyan-300 uppercase">Cotations personnalisées</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsoDrawMode("dimension");
+                    setInteractionMode("select");
+                    setStatusMessage("Cliquez sur 2 points/ports pour créer une cotation");
+                  }}
+                  className="px-2 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[9px] font-black flex items-center gap-1"
+                >
+                  <Plus className="w-3 h-3" /> Nouvelle
+                </button>
+              </div>
+
+              <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                {dimensions.length === 0 ? (
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-center text-slate-500 text-[10px]">
+                    Aucune cotation active. Cliquez sur <b>"Nouvelle"</b> ou l'outil <b>"Cotation"</b> dans la barre d'outils.
+                  </div>
+                ) : (
+                  dimensions.map(dim => {
+                    const isSel = selectedDimensionId === dim.id;
+                    return (
+                      <div
+                        key={dim.id}
+                        onClick={() => setSelectedDimensionId(dim.id)}
+                        className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                          isSel ? "bg-cyan-950/60 border-cyan-500 shadow-md" : "bg-slate-950/70 border-slate-800 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] font-bold text-white font-mono">{dim.label || "Cotation automatique"}</span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={e => {
+                                e.stopPropagation();
+                                setDimensions(prev => prev.map(d => d.id === dim.id ? { ...d, unit: d.unit === "mm" ? "m" : "mm" } : d));
+                              }}
+                              className="px-1.5 py-0.5 bg-slate-800 text-[8px] font-bold rounded text-slate-300 uppercase"
+                            >
+                              {dim.unit || "m"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={e => {
+                                e.stopPropagation();
+                                setDimensions(prev => prev.filter(d => d.id !== dim.id));
+                                if (selectedDimensionId === dim.id) setSelectedDimensionId(null);
+                              }}
+                              className="p-1 text-red-400 hover:text-red-300"
+                              title="Supprimer la cotation"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                        {isSel && (
+                          <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+                            <div>
+                              <label className="text-[8px] text-slate-400 block mb-0.5 font-bold">Libellé personnalisé</label>
+                              <input
+                                value={dim.label || ""}
+                                placeholder="Texte auto (ex: 2.50 m)"
+                                onChange={e => setDimensions(prev => prev.map(d => d.id === dim.id ? { ...d, label: e.target.value } : d))}
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] text-white"
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              <div>
+                                <label className="text-[8px] text-slate-400 block mb-0.5 font-bold">Décalage Y</label>
+                                <input
+                                  type="number"
+                                  value={dim.offset?.y || -24}
+                                  onChange={e => {
+                                    const y = Number(e.target.value);
+                                    setDimensions(prev => prev.map(d => d.id === dim.id ? { ...d, offset: { ...(d.offset || { x: 0, y: -24 }), y } } : d));
+                                  }}
+                                  className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] font-mono text-cyan-300"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[8px] text-slate-400 block mb-0.5 font-bold">Décalage X</label>
+                                <input
+                                  type="number"
+                                  value={dim.offset?.x || 0}
+                                  onChange={e => {
+                                    const x = Number(e.target.value);
+                                    setDimensions(prev => prev.map(d => d.id === dim.id ? { ...d, offset: { ...(d.offset || { x: 0, y: -24 }), x } } : d));
+                                  }}
+                                  className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] font-mono text-cyan-300"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB: SNAP */}
+          {rightPanelTab === "snap" && (
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center justify-between bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                <span className="text-[10px] font-black text-amber-300 uppercase flex items-center gap-1.5">
+                  <Magnet className="w-3.5 h-3.5" /> Accrochage magnétique
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSnapEnabled(v => !v)}
+                  className={`px-2.5 py-1 rounded-lg text-[9px] font-black transition-all ${snapEnabled ? "bg-amber-600 text-white" : "bg-slate-800 text-slate-400"}`}
+                >
+                  {snapEnabled ? "ACTIF" : "DÉSACTIVÉ"}
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-bold text-slate-400 block">Pas d'accrochage grille</label>
+                <div className="grid grid-cols-4 gap-1">
+                  {[0.1, 0.25, 0.5, 1.0].map(step => (
+                    <button
+                      key={step}
+                      type="button"
+                      onClick={() => setIsoSnapStep(step)}
+                      className={`py-1.5 rounded-lg text-[10px] font-mono font-bold border transition-all ${isoSnapStep === step ? "bg-amber-950/80 border-amber-500 text-amber-300" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-white"}`}
+                    >
+                      {step.toFixed(2)} m
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5 pt-1 border-t border-slate-800">
+                <label className="text-[9px] font-bold text-slate-400 block">Cibles magnétiques</label>
+                <label className="flex items-center gap-2 p-2 rounded-lg bg-slate-950 border border-slate-800/80 cursor-pointer">
+                  <input type="checkbox" checked={snapPorts} onChange={e => setSnapPorts(e.target.checked)} className="rounded bg-slate-800 border-slate-700 text-amber-500 focus:ring-0" />
+                  <span className="text-[10px] font-bold text-slate-200">Ports & piquages d'équipements</span>
+                </label>
+                <label className="flex items-center gap-2 p-2 rounded-lg bg-slate-950 border border-slate-800/80 cursor-pointer">
+                  <input type="checkbox" checked={snapEndpoints} onChange={e => setSnapEndpoints(e.target.checked)} className="rounded bg-slate-800 border-slate-700 text-amber-500 focus:ring-0" />
+                  <span className="text-[10px] font-bold text-slate-200">Extrémités de tronçons (nœuds)</span>
+                </label>
+                <label className="flex items-center gap-2 p-2 rounded-lg bg-slate-950 border border-slate-800/80 cursor-pointer">
+                  <input type="checkbox" checked={snapMidpoints} onChange={e => setSnapMidpoints(e.target.checked)} className="rounded bg-slate-800 border-slate-700 text-amber-500 focus:ring-0" />
+                  <span className="text-[10px] font-bold text-slate-200">Milieux de tuyauterie (50%)</span>
+                </label>
+                <label className="flex items-center gap-2 p-2 rounded-lg bg-slate-950 border border-slate-800/80 cursor-pointer">
+                  <input type="checkbox" checked={snapGrid} onChange={e => setSnapGrid(e.target.checked)} className="rounded bg-slate-800 border-slate-700 text-amber-500 focus:ring-0" />
+                  <span className="text-[10px] font-bold text-slate-200">Accrochage sur grille isométrique</span>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: PROPERTIES */}
+          {rightPanelTab === "properties" && (
+            <div className="space-y-3 text-xs">
+              {(() => {
+                const totalSel = selectedNodeIds.length + selectedSegmentIds.length + selectedFittingIds.length;
+                if (totalSel > 1) {
+                  return (
+                    <div className="p-3 rounded-xl bg-slate-950 border border-cyan-800/80 space-y-2 text-xs">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                        <span className="text-[10px] font-black text-cyan-400 uppercase">Sélection Multiple</span>
+                        <span className="font-mono text-cyan-300 font-bold bg-cyan-950 px-2 py-0.5 rounded border border-cyan-800">{totalSel} éléments</span>
+                      </div>
+                      <div className="space-y-1 text-[11px] text-slate-300">
+                        {selectedNodeIds.length > 0 && <div className="flex justify-between"><span>Nœuds :</span><span className="font-bold text-amber-300">{selectedNodeIds.length}</span></div>}
+                        {selectedSegmentIds.length > 0 && <div className="flex justify-between"><span>Tronçons :</span><span className="font-bold text-blue-300">{selectedSegmentIds.length}</span></div>}
+                        {selectedFittingIds.length > 0 && <div className="flex justify-between"><span>Organes / Raccords :</span><span className="font-bold text-emerald-300">{selectedFittingIds.length}</span></div>}
+                      </div>
+                      <div className="pt-2 border-t border-slate-800 flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={deleteSelection}
+                          className="flex-1 py-1 rounded bg-red-950/80 hover:bg-red-900 border border-red-800/80 text-red-300 text-[10px] font-bold"
+                        >
+                          Supprimer tout
+                        </button>
+                        <button
+                          type="button"
+                          onClick={clearSelection}
+                          className="flex-1 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold"
+                        >
+                          Désélectionner
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const selectedSeg = segments.find(s => s.id === selectedSegmentId || selectedSegmentIds.includes(s.id));
+                const selectedNd = nodes.find(n => n.id === selectedNodeId || selectedNodeIds.includes(n.id));
+
+                if (selectedSeg) {
+                  return (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-1">
+                        <span className="text-[10px] font-black text-blue-400 uppercase">Tronçon sélectionné</span>
+                        <span className="font-mono text-cyan-300 font-bold">DN{selectedSeg.dn}</span>
+                      </div>
+                      <div>
+                        <label className="text-[8px] font-bold text-slate-400 block mb-0.5">Pipeline / Source</label>
+                        <input
+                          value={selectedSeg.sourceName || ""}
+                          onChange={e => setSegments(prev => prev.map(s => s.id === selectedSeg.id ? { ...s, sourceName: e.target.value } : s))}
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[10px] font-bold text-white outline-none"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <div>
+                          <label className="text-[8px] font-bold text-slate-400 block mb-0.5">Longueur (m)</label>
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={selectedSeg.length}
+                            onChange={e => setSegmentLength(selectedSeg.id, Number(e.target.value))}
+                            className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[10px] font-mono font-bold text-cyan-300 outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[8px] font-bold text-slate-400 block mb-0.5">Diamètre</label>
+                          <select
+                            value={selectedSeg.dn}
+                            onChange={e => setSegments(prev => prev.map(s => s.id === selectedSeg.id ? { ...s, dn: Number(e.target.value) } : s))}
+                            className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[9px] font-bold text-white outline-none"
+                          >
+                            {DIAMETERS.map(([dn, inch]) => (
+                              <option key={dn} value={dn}>DN{dn} ({inch})</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (selectedNd) {
+                  return (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-1">
+                        <span className="text-[10px] font-black text-amber-400 uppercase">Point / Équipement</span>
+                        <span className="font-mono text-amber-300 font-bold">{selectedNd.name}</span>
+                      </div>
+                      <div>
+                        <label className="text-[8px] font-bold text-slate-400 block mb-0.5">Nom du repère</label>
+                        <input
+                          value={selectedNd.name}
+                          onChange={e => setNodes(prev => prev.map(n => n.id === selectedNd.id ? { ...n, name: e.target.value } : n))}
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[10px] font-bold text-white outline-none"
+                        />
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        <div>
+                          <label className="text-[8px] font-bold text-slate-400 block mb-0.5">X</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={selectedNd.x}
+                            onChange={e => setNodes(prev => prev.map(n => n.id === selectedNd.id ? { ...n, x: Number(e.target.value) } : n))}
+                            className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[9px] font-mono text-cyan-300"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[8px] font-bold text-slate-400 block mb-0.5">Y</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={selectedNd.y}
+                            onChange={e => setNodes(prev => prev.map(n => n.id === selectedNd.id ? { ...n, y: Number(e.target.value) } : n))}
+                            className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[9px] font-mono text-cyan-300"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[8px] font-bold text-slate-400 block mb-0.5">Z (m)</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={selectedNd.z || 0}
+                            onChange={e => setNodes(prev => prev.map(n => n.id === selectedNd.id ? { ...n, z: Number(e.target.value) } : n))}
+                            className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[9px] font-mono text-amber-300"
+                          />
+                        </div>
+                      </div>
+                      {selectedNd.equipmentType && (
+                        <div className="pt-2 border-t border-slate-800">
+                          <label className="text-[8px] font-bold text-slate-400 block mb-1">Orientation / Rotation</label>
+                          <div className="grid grid-cols-3 gap-1">
+                            <button type="button" onClick={() => rotateSelectedEquipment(-15)} className="py-1.5 rounded bg-slate-800 text-[10px] font-bold">−15°</button>
+                            <button type="button" onClick={() => rotateSelectedEquipment(15)} className="py-1.5 rounded bg-slate-800 text-[10px] font-bold">+15°</button>
+                            <button type="button" onClick={flipSelectedEquipment} className="py-1.5 rounded bg-amber-950 text-amber-300 text-[10px] font-bold">Miroir</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-center text-slate-500 text-[10px]">
+                    Sélectionnez un élément sur le schéma pour inspecter ses propriétés.
+                  </div>
+                );
+              })()}
+            </div>
+          )}
         </div>
       </div>
     </div>

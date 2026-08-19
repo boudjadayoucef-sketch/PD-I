@@ -38,7 +38,18 @@
   }
 
   function ensureBackButton() {
-    if (!isIsoScreen()) return;
+    if (!isIsoScreen()) {
+      document.querySelectorAll(".pdi-runtime-back-home").forEach((el) => el.remove());
+      return;
+    }
+    // In ISO mode, if the native topbar already has the Accueil button, remove runtime duplicates
+    const nativeAccueil = Array.from(document.querySelectorAll("button, a")).find((el) =>
+      !el.classList.contains("pdi-runtime-back-home") && /Accueil/i.test(textOf(el))
+    );
+    if (nativeAccueil) {
+      document.querySelectorAll(".pdi-runtime-back-home").forEach((el) => el.remove());
+      return;
+    }
     if (document.querySelector(".pdi-runtime-back-home, .pdi-iso-back-btn")) return;
     const header = findIsoHeader();
     if (!header) return;
@@ -78,61 +89,8 @@
   }
 
   function attachWheelPrecision() {
-    if (!isIsoScreen()) return;
-    const target = findCanvasOrWorkspace();
-    if (!target || target.__PDI_WHEEL_PATCHED_008E__) return;
-    target.__PDI_WHEEL_PATCHED_008E__ = true;
-    target.style.touchAction = "none";
-    target.style.userSelect = "none";
-
-    target.addEventListener("wheel", function (event) {
-      event.preventDefault();
-      event.stopPropagation();
-
-      window.dispatchEvent(new CustomEvent("pdi:iso-wheel", {
-        detail: { clientX: event.clientX, clientY: event.clientY, deltaY: event.deltaY }
-      }));
-
-      // Fallback visuel seulement si aucun label Zoom n'est détecté.
-      const bodyText = document.body ? document.body.innerText || "" : "";
-      if (/Zoom\s*\d+%/i.test(bodyText) && !window.__PDI_FORCE_FALLBACK_ZOOM__) return;
-
-      const rect = target.getBoundingClientRect();
-      const mx = event.clientX - rect.left;
-      const my = event.clientY - rect.top;
-      const before = { x: (mx - STATE.panX) / STATE.zoom, y: (my - STATE.panY) / STATE.zoom };
-      const nextZoom = clamp(STATE.zoom * (event.deltaY > 0 ? 0.92 : 1.08), 0.25, 4);
-      STATE.panX = mx - before.x * nextZoom;
-      STATE.panY = my - before.y * nextZoom;
-      STATE.zoom = nextZoom;
-      target.style.transformOrigin = "0 0";
-      target.style.transform = `translate(${STATE.panX}px, ${STATE.panY}px) scale(${STATE.zoom})`;
-      showZoom();
-    }, { passive: false });
-
-    target.addEventListener("mousedown", function (event) {
-      if (event.button !== 1 && !event.altKey) return;
-      event.preventDefault();
-      STATE.isPanning = true;
-      STATE.lastX = event.clientX;
-      STATE.lastY = event.clientY;
-      document.body.classList.add("pdi-panning");
-    });
-
-    window.addEventListener("mousemove", function (event) {
-      if (!STATE.isPanning) return;
-      STATE.panX += event.clientX - STATE.lastX;
-      STATE.panY += event.clientY - STATE.lastY;
-      STATE.lastX = event.clientX;
-      STATE.lastY = event.clientY;
-      target.style.transformOrigin = "0 0";
-      target.style.transform = `translate(${STATE.panX}px, ${STATE.panY}px) scale(${STATE.zoom})`;
-    });
-
-    window.addEventListener("mouseup", function () {
-      STATE.isPanning = false;
-      document.body.classList.remove("pdi-panning");
-    });
+    // Phase 3: The SVG viewBox / CTM and React viewport state are the sole authoritative coordinate system.
+    // DOM CSS transforms on the workspace container are disabled to prevent coordinate drift.
   }
 
   function markCanvas() {
