@@ -52,3 +52,32 @@ Correctifs :
 - remplacer le bloc `Architecture cible` de l'accueil par un carousel vertical de fonctionnalités ;
 - rendre le logo accueil robuste avec plusieurs chemins `/public`.
 
+
+## Patch 004 — Edition professionnelle (clic droit, proprietes, presse-papiers)
+
+- Menu contextuel ISO : Proprietes, Copier, Couper, Coller, Dupliquer, Rotation, Retourner, Supprimer.
+- Panneau de proprietes reel : X / Y / Z, elevation, DN, type, tag, rotation, ports, connexions, soudures W00x.
+- Proprietes multi-selection sans residu d'un objet precedent.
+- Presse-papiers copier / couper / coller / dupliquer avec NOUVEAUX IDs
+  (ports et lineId canonises par normalizedGraphPorts, positions calees par snapIsoV4).
+- Deplacement clavier (fleches, Alt = Z, Shift = pas x4).
+- Undo par operation logique + Redo (Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y).
+- Suppression sans topologie orpheline (purge des cotations support).
+- Raccourcis Cmd (macOS) et Ctrl (Windows/Linux). Conflit de la touche F leve.
+- Rectangle de selection (fenetre et traversee) sur noeuds et tronçons.
+- Aucune regression du trackpad Mac : le gestionnaire wheel n'a pas ete touche.
+
+## Patch 004b — Cotations, selection et correctif du chemin de suppression
+
+- CORRECTIF : la suppression d'une cotation passait par setDimensions() puis
+  commitGraph() avec l'etat "dimensions" non rafraichi, ce qui reintroduisait la
+  cotation supprimee et creait deux entrees d'historique pour une seule operation.
+  La suppression suit desormais un chemin logique unique (commitGraph).
+- CORRECTIF : le message des cotations orphelines etait ecrase immediatement.
+- Selection multiple de cotations (selectedDimensionIds), Shift+clic additif.
+- Le rectangle de selection capture aussi les cotations (fenetre et traversee),
+  via resolveDimensionAnchor + isoProjectV4 + lineSegmentIntersectsBox.
+- Presse-papiers : les cotations entierement contenues dans la selection sont
+  copiees, coupees, collees et dupliquees avec NOUVEAUX IDs et ancres remappees.
+  Une cotation dont une seule ancre est selectionnee n'est jamais clonee.
+- Aucune nouvelle logique metier, aucun offset arbitraire, aucun second modele.

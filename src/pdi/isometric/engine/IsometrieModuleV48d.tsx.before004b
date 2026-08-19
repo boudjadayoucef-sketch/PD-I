@@ -1071,10 +1071,6 @@ function IsometrieModule() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [rightPanelTab, setRightPanelTab] = useState<"properties" | "bom" | "dimensions" | "snap" | "layers">("properties");
   const [selectedDimensionId, setSelectedDimensionId] = useState<string | null>(null);
-  // PATCH 004b : selection multiple de cotations. selectedDimensionId reste la
-  // cotation ACTIVE (aucun panneau existant n'est casse) ; selectedDimensionIds
-  // porte la selection reelle.
-  const [selectedDimensionIds, setSelectedDimensionIds] = useState<string[]>([]);
   const [dragNodeId,setDragNodeId]=useState<string|null>(null);
   const [dragFittingInfo,setDragFittingInfo]=useState<{segmentId:string;fittingId:string}|null>(null);
   const [nodeZ, setNodeZ] = useState<number>(0);
@@ -1094,15 +1090,12 @@ function IsometrieModule() {
     additive: boolean;
     baselineNodeIds: string[];
     baselineSegIds: string[];
-    // PATCH 004b : base de reference des cotations pour le Shift+rectangle.
-    baselineDimIds: string[];
     active: boolean;
   } | null>(null);
   const [propertiesModalOpen, setPropertiesModalOpen] = useState(false);
   const [propertiesActiveTab, setPropertiesActiveTab] = useState<"all" | "segments" | "nodes" | "fittings" | "bom" | "welds">("all");
   const [propertiesSearch, setPropertiesSearch] = useState("");
-  // PATCH 004b : le presse-papiers transporte aussi les cotations internes.
-  const clipboardRef = useRef<{ nodes: IsoNode[]; segments: IsoSegment[]; dimensions: IsoDimension[] } | null>(null);
+  const clipboardRef = useRef<{ nodes: IsoNode[]; segments: IsoSegment[] } | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1338,7 +1331,6 @@ function IsometrieModule() {
     setSelectedFittingIds([]);
     setSelectedFitting(null);
     setSelectedDimensionId(null);
-    setSelectedDimensionIds([]);
   };
 
   const selectNodeV44=(id:string,additive:boolean)=>{
@@ -1407,16 +1399,7 @@ function IsometrieModule() {
       setSelectedFittingIds([]);
       setSelectedFitting(null);
     }
-    // PATCH 004b : Shift / Ctrl / Cmd ajoute ou retire la cotation de la selection.
-    const nextDimensionIds = additive
-      ? (selectedDimensionIds.includes(id)
-          ? selectedDimensionIds.filter((x) => x !== id)
-          : [...selectedDimensionIds, id])
-      : [id];
-    setSelectedDimensionIds(nextDimensionIds);
-    setSelectedDimensionId(
-      nextDimensionIds.length ? nextDimensionIds[nextDimensionIds.length - 1] : null,
-    );
+    setSelectedDimensionId(id);
   };
 
   // V4.7.2b_HEAL_INLINE_DELETE : retirer un organe inline reconstitue le tube.
@@ -1424,20 +1407,12 @@ function IsometrieModule() {
     const nodeSet = new Set(selectedNodeIds);
     const segSet = new Set(selectedSegmentIds);
     const fitSet = new Set(selectedFittingIds);
-    // PATCH 004b — CORRECTIF du Patch 004. Le 004 supprimait la cotation par
-    // setDimensions(), puis appelait commitGraph() en lui repassant l'etat
-    // "dimensions" NON rafraichi : la cotation supprimee etait reintroduite, et
-    // une seule suppression produisait DEUX entrees d'historique. La suppression
-    // passe desormais par un seul chemin logique : commitGraph.
-    const dimSet = new Set<string>(
-      selectedDimensionIds.length
-        ? selectedDimensionIds
-        : selectedDimensionId
-          ? [selectedDimensionId]
-          : [],
-    );
-    const hasDim = dimSet.size > 0;
+    const hasDim = !!selectedDimensionId;
     if (!nodeSet.size && !segSet.size && !fitSet.size && !hasDim) return;
+
+    if (hasDim && selectedDimensionId) {
+      setDimensions(prev => prev.filter(d => d.id !== selectedDimensionId));
+    }
 
     if (nodeSet.size || segSet.size || fitSet.size) {
       const nextNodes = nodes.filter((n) => !nodeSet.has(n.id));
@@ -1510,48 +1485,29 @@ function IsometrieModule() {
 
     // PATCH 004 : aucune cotation ne doit survivre a son noeud/port support.
     const survivingNodeIds = new Set(nextNodes.map((n) => n.id));
-    // PATCH 004b : 1) on retire les cotations explicitement selectionnees,
-    // 2) puis les cotations devenues orphelines. Aucune topologie orpheline.
-    const keptDimensions = dimensions.filter((dimension) => !dimSet.has(dimension.id));
-    const nextDimensions = keptDimensions.filter(
+    const nextDimensions = dimensions.filter(
       (dimension) =>
         survivingNodeIds.has(dimension.a.nodeId) &&
         survivingNodeIds.has(dimension.b.nodeId),
     );
-    const orphanDimensionCount = keptDimensions.length - nextDimensions.length;
+    const orphanDimensionCount = dimensions.length - nextDimensions.length;
     commitGraph(
       nextNodes,
       recalcSegmentLengths(nextNodes, nextSegments),
       lines,
       nextDimensions,
     );
+    if (orphanDimensionCount > 0) {
+      setStatusMessage(`Sélection supprimée · ${orphanDimensionCount} cotation(s) orpheline(s) retirée(s)`);
+    }
     setCtxMenu(null);
-    // PATCH 004b : un seul message final. Le 004 ecrivait le message des cotations
-    // orphelines puis l'ecrasait immediatement par le message generique.
     setStatusMessage(
-      [
-        healedInlineEquipment
-          ? "Équipement supprimé · tube reconstitué"
-          : "Sélection supprimée",
-        dimSet.size ? `${dimSet.size} cotation(s) supprimée(s)` : "",
-        orphanDimensionCount > 0
-          ? `${orphanDimensionCount} cotation(s) orpheline(s) retirée(s)`
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" · "),
+      healedInlineEquipment
+        ? "Équipement supprimé · tube reconstitué"
+        : "Sélection supprimée",
     );
     } else if (hasDim) {
-      // PATCH 004b : suppression de cotations seules, meme chemin logique,
-      // une seule entree d'historique.
-      commitGraph(
-        nodes,
-        segments,
-        lines,
-        dimensions.filter((dimension) => !dimSet.has(dimension.id)),
-      );
-      setCtxMenu(null);
-      setStatusMessage(`${dimSet.size} cotation(s) supprimée(s)`);
+      setStatusMessage("Cotation supprimée");
     }
     clearSelection();
   };
@@ -1560,14 +1516,6 @@ function IsometrieModule() {
 
   // Sous-graphe coherent : les noeuds selectionnes et uniquement les tubes
   // dont LES DEUX extremites sont selectionnees (jamais de tube pendant).
-  // PATCH 004b : cotations entierement contenues dans une selection de noeuds.
-  // Une cotation dont une seule ancre est selectionnee n'est jamais copiee :
-  // aucune cotation orpheline ne peut etre creee par le presse-papiers.
-  const selectionDimensions=(selNodes:IsoNode[])=>{
-    const ids=new Set(selNodes.map(n=>n.id));
-    return dimensions.filter(d=>ids.has(d.a.nodeId)&&ids.has(d.b.nodeId)).map(d=>({...d}));
-  };
-
   const selectionSubGraph=()=>{
     const ids=new Set(selectedNodeIds);
     const pickedNodes=nodes.filter(n=>ids.has(n.id));
@@ -1576,7 +1524,7 @@ function IsometrieModule() {
   };
 
   // Re-identification complete : nouveaux IDs noeuds, ports, tubes et organes.
-  const cloneSubGraphWithNewIds=(source:{nodes:IsoNode[];segments:IsoSegment[];dimensions?:IsoDimension[]},offset:{x:number;y:number;z:number})=>{
+  const cloneSubGraphWithNewIds=(source:{nodes:IsoNode[];segments:IsoSegment[]},offset:{x:number;y:number;z:number})=>{
     const nodeIdMap=new Map<string,string>();
     const portIdMap=new Map<string,string>();
     const clonedNodes:IsoNode[]=source.nodes.map(n=>{
@@ -1605,32 +1553,21 @@ function IsometrieModule() {
       y:snapIsoV4(n.y+offset.y,isoSnapStep),
       z:Number((n.z+offset.z).toFixed(3)),
     }));
-    // PATCH 004b : cotations clonees avec NOUVEAUX IDs et ancres remappees
-    // (noeud et port), en reutilisant les tables de correspondance existantes.
-    const clonedDimensions:IsoDimension[]=(source.dimensions||[])
-      .filter(d=>nodeIdMap.has(d.a.nodeId)&&nodeIdMap.has(d.b.nodeId))
-      .map(d=>({
-        ...d,
-        id:uid("dim"),
-        a:{...d.a,nodeId:nodeIdMap.get(d.a.nodeId) as string,portId:d.a.portId?(portIdMap.get(d.a.portId)||d.a.portId):d.a.portId},
-        b:{...d.b,nodeId:nodeIdMap.get(d.b.nodeId) as string,portId:d.b.portId?(portIdMap.get(d.b.portId)||d.b.portId):d.b.portId},
-      }));
-    return {nodes:movedNodes,segments:clonedSegments,dimensions:clonedDimensions,nodeIdMap};
+    return {nodes:movedNodes,segments:clonedSegments,nodeIdMap};
   };
 
   const copySelection=()=>{
     const sub=selectionSubGraph();
     if(!sub.nodes.length){setStatusMessage("Rien à copier");return;}
-    const copiedDimensions=selectionDimensions(sub.nodes);
-    clipboardRef.current={nodes:sub.nodes.map(n=>({...n})),segments:sub.segments.map(s=>({...s,fittings:s.fittings.map(f=>({...f}))})),dimensions:copiedDimensions};
-    setStatusMessage(`${sub.nodes.length} élément(s) copié(s)${copiedDimensions.length?` · ${copiedDimensions.length} cotation(s)`:""}`);
+    clipboardRef.current={nodes:sub.nodes.map(n=>({...n})),segments:sub.segments.map(s=>({...s,fittings:s.fittings.map(f=>({...f}))}))};
+    setStatusMessage(`${sub.nodes.length} élément(s) copié(s)`);
     setCtxMenu(null);
   };
 
   const cutSelection=()=>{
     const sub=selectionSubGraph();
     if(!sub.nodes.length){setStatusMessage("Rien à couper");return;}
-    clipboardRef.current={nodes:sub.nodes.map(n=>({...n})),segments:sub.segments.map(s=>({...s,fittings:s.fittings.map(f=>({...f}))})),dimensions:selectionDimensions(sub.nodes)};
+    clipboardRef.current={nodes:sub.nodes.map(n=>({...n})),segments:sub.segments.map(s=>({...s,fittings:s.fittings.map(f=>({...f}))}))};
     deleteSelection();
     setStatusMessage(`${sub.nodes.length} élément(s) coupé(s)`);
   };
@@ -1644,16 +1581,12 @@ function IsometrieModule() {
     const normalized=normalizedGraphPorts([...nodes,...cloned.nodes],[...segments,...cloned.segments]);
     const nextNodes=normalized.nodes;
     const nextSegments=normalized.segments;
-    // PATCH 004b : cotations clonees ajoutees dans la MEME operation logique.
-    const pastedDimensions=cloned.dimensions||[];
-    commitGraph(nextNodes,recalcSegmentLengths(nextNodes,nextSegments),lines,[...dimensions,...pastedDimensions]);
+    commitGraph(nextNodes,recalcSegmentLengths(nextNodes,nextSegments));
     setSelectedNodeIds(cloned.nodes.map(n=>n.id));
     setSelectedSegmentIds([]);
     setSelectedFittingIds([]);
     setSelectedNodeId(cloned.nodes[0]?.id||null);
-    setSelectedDimensionIds(pastedDimensions.map(d=>d.id));
-    setSelectedDimensionId(pastedDimensions.length?pastedDimensions[pastedDimensions.length-1].id:null);
-    setStatusMessage(`${cloned.nodes.length} élément(s) collé(s)${pastedDimensions.length?` · ${pastedDimensions.length} cotation(s)`:""} · nouveaux IDs`);
+    setStatusMessage(`${cloned.nodes.length} élément(s) collé(s) · nouveaux IDs`);
     setCtxMenu(null);
   };
 
@@ -1661,20 +1594,16 @@ function IsometrieModule() {
     const sub=selectionSubGraph();
     if(!sub.nodes.length){setStatusMessage("Rien à dupliquer");return;}
     const step=Math.max(isoSnapStep,.25);
-    const cloned=cloneSubGraphWithNewIds({...sub,dimensions:selectionDimensions(sub.nodes)},{x:step,y:step,z:0});
+    const cloned=cloneSubGraphWithNewIds(sub,{x:step,y:step,z:0});
     const normalized=normalizedGraphPorts([...nodes,...cloned.nodes],[...segments,...cloned.segments]);
     const nextNodes=normalized.nodes;
     const nextSegments=normalized.segments;
-    // PATCH 004b : cotations dupliquees dans la MEME operation logique.
-    const duplicatedDimensions=cloned.dimensions||[];
-    commitGraph(nextNodes,recalcSegmentLengths(nextNodes,nextSegments),lines,[...dimensions,...duplicatedDimensions]);
+    commitGraph(nextNodes,recalcSegmentLengths(nextNodes,nextSegments));
     setSelectedNodeIds(cloned.nodes.map(n=>n.id));
     setSelectedSegmentIds([]);
     setSelectedFittingIds([]);
     setSelectedNodeId(cloned.nodes[0]?.id||null);
-    setSelectedDimensionIds(duplicatedDimensions.map(d=>d.id));
-    setSelectedDimensionId(duplicatedDimensions.length?duplicatedDimensions[duplicatedDimensions.length-1].id:null);
-    setStatusMessage(`${cloned.nodes.length} élément(s) dupliqué(s)${duplicatedDimensions.length?` · ${duplicatedDimensions.length} cotation(s)`:""} · nouveaux IDs`);
+    setStatusMessage(`${cloned.nodes.length} élément(s) dupliqué(s) · nouveaux IDs`);
     setCtxMenu(null);
   };
 
@@ -1924,7 +1853,6 @@ function IsometrieModule() {
         additive,
         baselineNodeIds: additive ? [...selectedNodeIds] : [],
         baselineSegIds: additive ? [...selectedSegmentIds] : [],
-        baselineDimIds: additive ? [...selectedDimensionIds] : [],
         active: false,
       };
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -1981,31 +1909,7 @@ function IsometrieModule() {
       setSelectedSegmentId(finalSegIds.length ? finalSegIds[finalSegIds.length - 1] : null);
       setSelectedFittingIds([]);
       setSelectedFitting(null);
-
-      // PATCH 004b : le rectangle capture aussi les cotations. Aucune geometrie
-      // recodee : resolveDimensionAnchor + isoProjectV4 + lineSegmentIntersectsBox,
-      // et le meme offset de trace que le rendu.
-      const boxedDimIds = dimensions.filter((d) => {
-        const aw = resolveDimensionAnchor(d.a);
-        const bw = resolveDimensionAnchor(d.b);
-        if (!aw || !bw) return false;
-        const off = d.offset || { x: 0, y: -24 };
-        const pa = isoProjectV4(aw.x, aw.y, aw.z, viewport.zoom, viewport.panX, viewport.panY);
-        const pb = isoProjectV4(bw.x, bw.y, bw.z, viewport.zoom, viewport.panX, viewport.panY);
-        const qa = { x: pa.x + off.x, y: pa.y + off.y };
-        const qb = { x: pb.x + off.x, y: pb.y + off.y };
-        if (isCrossing) return lineSegmentIntersectsBox(qa, qb, minX, minY, maxX, maxY);
-        return (
-          qa.x >= minX && qa.x <= maxX && qa.y >= minY && qa.y <= maxY &&
-          qb.x >= minX && qb.x <= maxX && qb.y >= minY && qb.y <= maxY
-        );
-      }).map((d) => d.id);
-
-      const finalDimIds = m.additive
-        ? Array.from(new Set([...m.baselineDimIds, ...boxedDimIds]))
-        : boxedDimIds;
-      setSelectedDimensionIds(finalDimIds);
-      setSelectedDimensionId(finalDimIds.length ? finalDimIds[finalDimIds.length - 1] : null);
+      setSelectedDimensionId(null);
       return;
     }
 
@@ -2114,9 +2018,9 @@ function IsometrieModule() {
     if(marqueeRef.current){
       const m = marqueeRef.current;
       if (m.active) {
-        const total = selectedNodeIds.length + selectedSegmentIds.length + selectedDimensionIds.length;
+        const total = selectedNodeIds.length + selectedSegmentIds.length;
         if (total > 0) {
-          setStatusMessage(`Sélection multiple : ${selectedNodeIds.length} nœud(s), ${selectedSegmentIds.length} tronçon(s), ${selectedDimensionIds.length} cotation(s)`);
+          setStatusMessage(`Sélection multiple : ${selectedNodeIds.length} nœud(s), ${selectedSegmentIds.length} tronçon(s)`);
         } else {
           setStatusMessage("Zone vide sélectionnée");
         }
@@ -4006,7 +3910,7 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
                   const mx = (q1.x + q2.x) / 2, my = (q1.y + q2.y) / 2;
                   const distValue = Math.hypot(bw.x - aw.x, bw.y - aw.y, bw.z - aw.z);
                   const label = dimension.label || (dimension.unit === "mm" ? `${Math.round(distValue * 1000)} mm` : `${distValue.toFixed(2)} m`);
-                  const isDimSel = selectedDimensionId === dimension.id || selectedDimensionIds.includes(dimension.id);
+                  const isDimSel = selectedDimensionId === dimension.id;
 
                   return (
                     <g
@@ -4017,8 +3921,7 @@ setLastSavedAt(restoredTime);setSaveState("autosaved");setRecoveryCandidate(null
                       className="cursor-pointer select-none"
                       onClick={(e) => {
                         e.stopPropagation();
-                        // PATCH 004b : passe par la fonction metier de selection.
-                        selectDimensionV44(dimension.id, e.shiftKey || e.ctrlKey || e.metaKey);
+                        setSelectedDimensionId(dimension.id);
                         setRightPanelOpen(true);
                         setRightPanelTab("dimensions");
                         setStatusMessage(`Cotation sélectionnée : ${label}`);
