@@ -81,3 +81,21 @@ Correctifs :
   copiees, coupees, collees et dupliquees avec NOUVEAUX IDs et ancres remappees.
   Une cotation dont une seule ancre est selectionnee n'est jamais clonee.
 - Aucune nouvelle logique metier, aucun offset arbitraire, aucun second modele.
+
+## Patch 004c — Interface publique (landing v4) portee en composants React
+
+- Nouveaux fichiers : `src/pdi/landing/PdiLandingV4.tsx` et `src/pdi/landing/pdiLandingV4.css`.
+- La page d'accueil publique est desormais un composant React reel, plus un bundle HTML injecte :
+  une seule source de verite d'interface.
+- Aucune barre laterale sur la page publicitaire : la coquille applicative
+  (barre superieure + navigation) n'est montee qu'apres l'entree dans le logiciel.
+- Banniere d'information pleine largeur en quatre couleurs (ISO, Vision, Croquis, JSON).
+- Barre de navigation flottante minimaliste, avec menu burger mobile.
+- Section "PD&I en 4 temps" conservee : Capturer, Reconnaitre, Construire, Livrer.
+- Bento minimaliste des capacites, et pied de page minimaliste a cinq colonnes.
+- Flux : landing -> entree -> accueil -> "Nouveau projet isometrique" -> editeur V4.8d.
+- Etape memorisee en sessionStorage (`pdi.stage.v4`) : aucune interference avec les
+  cles localStorage d'autosauvegarde du moteur.
+- Hygiene : la sauvegarde `.before004b` est sortie de `src/` vers `backups/`.
+- Garde-fou verifie par le script : le moteur `IsometrieModuleV48d.tsx` est
+  STRICTEMENT inchange (comparaison octet a octet avant/apres).

@@ -1,17 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import PdiBrandMark from "./PdiBrandMark";
 import PdiIsometricEditor from "../isometric/PdiIsometricEditor";
-// PATCH 004c : page publicitaire publique, montee AVANT la coquille applicative.
-import PdiLandingV4 from "../landing/PdiLandingV4";
 import isoPiping3D from "../../assets/images/pdi_iso_piping_3d_1787006532562.jpg";
 import valve3D from "../../assets/images/pdi_valve_3d_1787006543831.jpg";
 import plantScan3D from "../../assets/images/pdi_plant_scan_3d_1787006555680.jpg";
 import cadSpool3D from "../../assets/images/pdi_cad_spool_3d_1787006567003.jpg";
 
 type PdiModule = "home" | "isometric" | "vision" | "sketch" | "cad" | "json" | "pdf" | "projects" | "assistant";
-
-// PATCH 004c : cle de session de l'etape publique.
-const PDI_STAGE_KEY = "pdi.stage.v4";
 
 type LaunchCard = {
   id: PdiModule;
@@ -99,33 +94,10 @@ function ComingSoonPanel({ title, children }: { title: string; children: React.R
 
 export default function PdiUnifiedApp() {
   const [activeModule, setActiveModule] = useState<PdiModule>("home");
-  // PATCH 004c : etape "landing" (page publicitaire, sans barre laterale) puis
-  // "app" (coquille + modules). Memorise pour la session uniquement : aucune
-  // interference avec les cles localStorage d'autosauvegarde du moteur V4.8d.
-  const [stage, setStage] = useState<"landing" | "app">(() => {
-    try {
-      return window.sessionStorage.getItem(PDI_STAGE_KEY) === "app" ? "app" : "landing";
-    } catch {
-      return "landing";
-    }
-  });
-
-  const enterApp = React.useCallback(() => {
-    try {
-      window.sessionStorage.setItem(PDI_STAGE_KEY, "app");
-    } catch {
-      /* stockage indisponible : l'entree reste valable pour l'affichage courant */
-    }
-    setStage("app");
-    setActiveModule("home");
-    window.scrollTo(0, 0);
-  }, []);
 
   useEffect(() => {
     const onNavigate = (event: Event) => {
       const detail = (event as CustomEvent<PdiModule>).detail;
-      // PATCH 004c : une navigation externe entre dans le logiciel.
-      setStage("app");
       setActiveModule(detail || "home");
     };
     window.addEventListener("pdi:navigate", onNavigate as EventListener);
@@ -133,11 +105,6 @@ export default function PdiUnifiedApp() {
   }, []);
 
   const moduleTitle = useMemo(() => navItems.find((x) => x.id === activeModule)?.title || "PD&I", [activeModule]);
-
-  // PATCH 004c : la page publicitaire est rendue seule, sans barre laterale ni
-  // barre superieure. Une navigation externe (pdi:navigate) entre directement
-  // dans le logiciel, ce qui preserve le comportement existant.
-  if (stage === "landing") return <PdiLandingV4 onEnter={enterApp} />;
 
   if (activeModule === "isometric") return <PdiIsometricEditor />;
 
